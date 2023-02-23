@@ -1,0 +1,1053 @@
+---
+title: "Confidence in the perceptual task"
+author: "Kiri Kuroda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    includes:
+      in_header: ../html/header.html
+    css: ../css/style.css
+    md_extensions: -ascii_identifiers
+    df_print: paged
+    chunk_output_type: console
+    toc: yes
+    toc_float:
+      collapsed: false
+---
+
+<br>
+
+# Setup
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(magrittr)
+library(plotrix)
+library(shinystan)
+library(tidybayes)
+library(ggridges)
+library(cmdstanr)
+library(loo)
+library(furrr)
+plan(multisession)
+
+# User-defined functions
+source("../function/r/my_functions.R")
+
+# Import data
+# We modified a column name because we realized that
+# "block" sounds more intuitive than "task" in description of the analysis
+df_gamble <- read_csv("../data/preprocessed/gamble.csv") %>%
+  rename(block = task)
+df_solo <- read_csv("../data/preprocessed/solo.csv") %>%
+  rename(block = task)
+df_group <- read_csv("../data/preprocessed/group.csv") %>%
+  rename(block = task)
+df_solo_group <- bind_rows(df_solo, df_group)
+df_gabor_solo <- read_csv("../data/preprocessed/solo_gabor.csv") %>%
+  rename(block = task)
+df_gabor_group <- read_csv("../data/preprocessed/group_gabor.csv") %>%
+  rename(block = task)
+df_gabor <- bind_rows(df_gabor_solo, df_gabor_group)
+df_questionnaire <- read_csv("../data/preprocessed/questionnaire.csv")
+
+# Import the fitting results
+median_powutil <- readRDS("../output/data/gamble/median_powutil.rds")
+median_gabor <- readRDS("../output/data/gabor/median_gabor.rds")
+
+# cmdstanr
+# install_cmdstan(version = "2.28.0")
+```
+
+<br>
+
+# Model
+
+## Equation
+
+Now we have the two perceptual parameters ($\epsilon$ and $\lambda$) for each participant. The expected probability of having made a correct decision ($d$) is expressed as follows (Navajas et al., 2017):
+
+$$
+\hat{p}(\mathrm{correct}|\bar{\mu}_{30}, \sigma_{30}, d) = \int_{-\infty}^{+\infty}{d\mu_{30}\hat{p}(\mathrm{correct|\mu_{30}, \sigma_{30}})p(\mu_{30}|\bar{\mu}_{30},\sigma_{30},d)},
+$$
+
+<br>
+
+The first term inside integral indicates the probability of the correct response given $\mu_{30}$ and $\sigma_{30}$. The second term indicates the probability density of $\mu_{30}$ under $\mathcal{N}(\bar{\mu}_{30}, \sigma_{30})$.
+
+<br>
+
+## Demo
+
+Firstly, let us review the model.
+
+The participant's estimate of $\mu_{30}$ converges to a normal distribution below:
+
+```{r}
+n_theta <- 30
+min_theta <- -13
+max_theta <- 19
+epsilon <- 1
+lambda <- 0.95
+
+-50:150 %>%
+  map(~stat_updating_model(
+    n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+    epsilon = epsilon, lambda = lambda, seed = 1
+  )) %>%
+  imap_dfr(~list(
+    p = dnorm(.y - 51, mean = .x$mu, sd = .x$sigma),
+    x = .y - 51
+  )) %>%
+  mutate(positive = (x > 0)) %>%
+  ggplot(aes(x = x, y = p, fill = positive)) +
+  geom_ribbon(aes(ymin = 0, ymax = p)) +
+  geom_line() +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  scale_fill_manual(values = c("white", "gray")) +
+  labs(x = "\u03bc30", y = "Probability density") + 
+  guides(fill = "none")
+```
+
+<br>
+
+Mean, SD, and the cumulative probability of $\mu_{30}$:
+
+```{r}
+stat_updating_model(
+  n_theta = 30, min_theta = -13, max_theta = 19,
+  epsilon = 1, lambda = 0.95, seed = 1
+) %>%
+  as_tibble()
+```
+
+<br>
+
+Given this distribution, let us assume that the agent judges the orientation is clockwise. Then, how much is the expected probability of the correct response when $\mu_{30} = 60$?
+
+```{r}
+mu_30 <- 60
+
+-50:150 %>%
+  map(~stat_updating_model(
+    n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+    epsilon = epsilon, lambda = lambda, seed = 1
+  )) %>%
+  imap_dfr(~list(
+    p = dnorm(.y - 51, mean = mu_30, sd = .x$sigma),
+    x = .y - 51
+  )) %>%
+  mutate(positive = (x > 0)) %>%
+  ggplot(aes(x = x, y = p, fill = positive)) +
+  geom_ribbon(aes(ymin = 0, ymax = p)) +
+  geom_line() +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  geom_vline(aes(xintercept = mu_30), linetype = "dashed") +
+  scale_x_continuous(breaks = c(-50, 0, mu_30, 150)) +
+  scale_fill_manual(values = c("white", "gray")) +
+  labs(x = "\u03bc30", y = "Probability density") + 
+  guides(fill = "none")
+```
+
+<br>
+
+The shaded area (cumulative probability) is:
+
+```{r}
+stat_updating_model(
+  n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+  epsilon = epsilon, lambda = lambda, seed = 1
+) %$%
+  pnorm(mu_30 / sigma)
+```
+
+<br>
+
+Apparently, we now have the expected probability of the correct response when $\mu_{30} = 60$.
+
+However, we need to multiply it by the conditional probability density of $\mu_{30}$ given the agent's decision. For example, the probability density of $\mu_{30} = 60$ given the response is clockwise is:
+
+```{r}
+# Calculate normalization constant
+z_const <- stat_updating_model(
+  n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+  epsilon = epsilon, lambda = lambda, seed = 1
+) %$%
+  calc_z_const(mu_bar = mu, sigma = sigma, judge = 1)
+
+z_const
+```
+
+```{r}
+# Probability density given the response is clockwise (+1)
+stat_updating_model(
+  n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+  epsilon = epsilon, lambda = lambda, seed = 1
+) %$%
+  dnorm(mu_30, mean = mu, sd = sigma) / z_const
+```
+
+<br>
+
+To calculate the expected probability of having made a correct decision, we need to integrate the probability density over $\mu_{30}$ from $-\infty$ to $\infty$.
+
+As Navajas et al. (2017)wrote, the expected probability of having made a correct decision is:
+
+$$
+\hat{p}(\mathrm{correct}|\bar{\mu}_{30}, \sigma_{30}, d) = \frac{1}{Z}\int_{-\infty}^{+\infty}d\mu_{30}\frac{e^{-\frac{(\mu_{30} - \bar{\mu}_{30})^2}{2\sigma^2_{30}}}}{\sqrt{2\pi\sigma^2_{30}}}\Theta(\mu_{30}d)\Phi\biggl(\frac{|\mu_{30}|}{\sigma_{30}}\biggr)
+$$
+
+In the above example, the expected probability of having made a correct decision is the probability under the following curve:
+
+```{r}
+-50:150 %>%
+  map(~stat_updating_model(
+    n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+    epsilon = epsilon, lambda = lambda, seed = 1
+  )) %>%
+  imap_dfr(~list(
+    p = p_hat_integrand(
+      mu_30 = .y - 51, mu_bar = .x$mu, sigma = .x$sigma, judge = 1
+    ),
+    x = .y - 51
+  )) %>%
+  ggplot(aes(x, p)) +
+  geom_ribbon(aes(ymin = 0, ymax = p), fill = "gray") +
+  geom_line() +
+  labs(x = "\u03bc30", y = "Probability density")
+```
+
+```{r}
+result_updating_model <- stat_updating_model(
+  n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+  epsilon = epsilon, lambda = lambda, seed = 1
+)
+
+result_updating_model %$%
+  integrate(
+    p_hat_integrand, lower = -Inf, upper = Inf,
+    mu_bar = mu, sigma = sigma, judge = 1
+  ) %>%
+  .$value / calc_z_const(
+    mu_bar = result_updating_model$mu,
+    sigma = result_updating_model$sigma,
+    judge = 1
+  )
+```
+
+<br>
+
+By contrast, if the agent's decision is anticlockwise, the probability is:
+
+```{r}
+result_updating_model %$%
+  integrate(
+    p_hat_integrand, lower = -Inf, upper = Inf,
+    mu_bar = mu, sigma = sigma, judge = -1
+  ) %>%
+  .$value / calc_z_const(
+    mu_bar = result_updating_model$mu,
+    sigma = result_updating_model$sigma,
+    judge = -1
+  )
+```
+
+<br>
+
+## Expected probability of a correct response
+
+Following the equations above, we calculated the expected probability of a correct response. we call this probability $\hat{p}$. Note that $\hat{p}$ ranges from 0.5 to 1 because $\hat{p}$ must be larger than the chance level, 0.5.
+
+```{r, eval=FALSE}
+df_gabor_nested <- df_gabor %>%
+  arrange(block, id, trial) %>%
+  select(!order) %>%
+  group_by(block, id, trial) %>%
+  nest()
+
+p_hat_gabor <- df_solo_group %>%
+  filter(order == "post" | is.na(order)) %>%
+  select(block, id, trial, judge) %>%
+  mutate(judge = if_else(judge == "clockwise", 1, -1)) %>%
+  left_join(median_gabor, by = "id") %>%
+  arrange(block, id, trial) %>%
+  left_join(df_gabor_nested, by = c("block", "id", "trial")) %>%
+  group_by(block, id, trial) %>%
+  nest() %>%
+  mutate(
+    stat = map(data, ~stat_updating_model(
+      theta = pluck(.x$data, 1, "ori"),
+      epsilon = .x$epsilon, lambda = .x$lambda
+    )),
+    mu = pluck(stat, 1, "mu"),
+    sigma = pluck(stat, 1, "sigma")
+  ) %>%
+  unnest(cols = c(data)) %>%
+  group_by(block, id, trial) %>%
+  nest() %>%
+  mutate(
+    p_integral = map(data, ~integrate(
+      p_hat_integrand, lower = -Inf, upper = Inf,
+      mu_bar = .x$mu, sigma = .x$sigma, judge = .x$judge
+    )),
+    z_const = map_dbl(data, ~calc_z_const(
+      mu_bar = .x$mu, sigma = .x$sigma, judge = .x$judge
+    )),
+    p_raw = pluck(p_integral, 1, "value"),
+    p_hat = p_raw / z_const
+  ) %>%
+  select(block:trial, z_const:p_hat)
+```
+
+```{r, eval=FALSE, include=FALSE}
+# saveRDS(p_hat_gabor, "../output/data/confidence/subjective_accuracy/p_hat_gabor.rds")
+```
+
+```{r, include=FALSE}
+p_hat_gabor <- readRDS("../output/data/confidence/subjective_accuracy/p_hat_gabor.rds")
+```
+
+<br>
+
+The figure shows mean $\hat{p} \pm SE$ as a function of task difficulty and correct/wrong responses. This pattern is similar to the result (Fig. 2b) in Navajas et al. (2017).
+
+```{r, message=FALSE}
+p_hat_gabor %>%
+  left_join(df_solo_group, by = c("block", "id", "trial")) %>%
+  group_by(result, id, ori_var) %>%
+  summarise(ind_mean = mean(p_hat)) %>%
+  group_by(result, ori_var) %>%
+  summarise(mean = mean(ind_mean), se = std.error(ind_mean)) %>%
+  mutate(ori_var = fct_rev(factor(ori_var))) %>%
+  rename(Result = result) %>%
+  ggplot(aes(
+    ori_var, mean, color = Result, group = Result,
+    linetype = Result, shape = Result
+  )) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se),
+    width = 0.1, linetype = "solid", show.legend = FALSE
+  ) +
+  ylim(0.6, 1) +
+  scale_color_manual(values = c("red3", "#56B4E9")) +
+  labs(x = "Variance of orientations", y = "Expected accuracy (p-hat)") +
+  theme(legend.position = "top")
+```
+
+<br>
+
+# Parameter estimation
+
+We have obtained the estimates of the expected accuracy of having made a correct response.
+
+However, it does not mean that participants know the exact probability. Rather, participants probably felt the probability in a biased manner. Hereafter, we call this biased probability as subjective probability of having made a correct response.
+
+We then fitted five models on subjective probability to the data.
+
+<br>
+
+## Hierarchical Bayesian modeling
+
+We first made a data-list for the estimation.
+
+```{r}
+datalist_confidence <- p_hat_gabor %>%
+  inner_join(df_solo_group, by = c("block", "id", "trial")) %>%
+  filter(block == "solo") %$%
+    list(
+      N = nrow(.),
+      N_subj = length(levels(factor(id))),
+      id = id,
+      choice = as.numeric(choice == "risky"),
+      reward = payoff_risky + payoff_jitter,
+      p_hat = p_hat,
+      rho = median_powutil$rho,
+      theta_var = ori_var,
+      scale = 1000
+    )
+```
+
+<br>
+
+See the Stan code (`../function/confidence/confidence_accuracy.stan`) for more details of the priors.
+
+<br>
+
+### Null model
+
+```{r, eval=FALSE}
+model_null <- cmdstan_model("../function/stan/confidence/subjective_accuracy/confidence_null.stan")
+
+fit_null <- model_null$sample(
+  datalist_confidence, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_null_rstan <- cmdstan2rstan(fit_null)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_null$save_output_files("../output/data/confidence/subjective_accuracy/")
+# saveRDS(fit_null, "../output/data/confidence/subjective_accuracy/fit_null.rds")
+# saveRDS(fit_null_rstan, "../output/data/confidence/subjective_accuracy/fit_null_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_null <- readRDS("../output/data/confidence/subjective_accuracy/fit_null.rds")
+# fit_null_rstan <- readRDS("../output/data/confidence/subjective_accuracy/fit_null_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_null_rstan)
+```
+
+<br>
+
+### 1-parameter function
+
+```{r, eval=FALSE}
+model_onepar <- cmdstan_model("../function/stan/confidence/subjective_accuracy/confidence_onepar.stan")
+
+fit_onepar <- model_onepar$sample(
+  datalist_confidence, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_onepar_rstan <- cmdstan2rstan(fit_onepar)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_onepar$save_output_files("../output/data/confidence/subjective_accuracy/")
+# saveRDS(fit_onepar, "../output/data/confidence/subjective_accuracy/fit_onepar.rds")
+# saveRDS(fit_onepar_rstan, "../output/data/confidence/subjective_accuracy/fit_onepar_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_onepar <- readRDS("../output/data/confidence/subjective_accuracy/fit_onepar.rds")
+# fit_onepar_rstan <- readRDS("../output/data/confidence/subjective_accuracy/fit_onepar_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_onepar_rstan)
+```
+
+<br>
+
+### 2-parameter function
+
+```{r, eval=FALSE}
+model_twopar <- cmdstan_model("../function/stan/confidence/subjective_accuracy/confidence_twopar.stan")
+
+fit_twopar <- model_twopar$sample(
+  datalist_confidence, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_twopar_rstan <- cmdstan2rstan(fit_twopar)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_twopar$save_output_files("../output/data/confidence/subjective_accuracy/")
+# saveRDS(fit_twopar, "../output/data/confidence/subjective_accuracy/fit_twopar.rds")
+# saveRDS(fit_twopar_rstan, "../output/data/confidence/subjective_accuracy/fit_twopar_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_twopar <- readRDS("../output/data/confidence/subjective_accuracy/fit_twopar.rds")
+# fit_twopar_rstan <- readRDS("../output/data/confidence/subjective_accuracy/fit_twopar_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_twopar_rstan)
+```
+
+<br>
+
+### Prospect theory
+
+```{r, eval=FALSE}
+model_prospect <- cmdstan_model("../function/stan/confidence/subjective_accuracy/confidence_prospect.stan")
+
+set.seed(1)
+fit_prospect <- model_prospect$sample(
+  datalist_confidence, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000,
+  init = function(){list(
+    alpha = runif(63, 20, 30),
+    tau = runif(63, 10000, 15000)
+  )}
+)
+
+fit_prospect_rstan <- cmdstan2rstan(fit_prospect)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_prospect$save_output_files("../output/data/confidence/subjective_accuracy/")
+# saveRDS(fit_prospect, "../output/data/confidence/subjective_accuracy/fit_prospect.rds")
+# saveRDS(fit_prospect_rstan, "../output/data/confidence/subjective_accuracy/fit_prospect_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_prospect <- readRDS("../output/data/confidence/subjective_accuracy/fit_prospect.rds")
+# fit_prospect_rstan <- readRDS("../output/data/confidence/subjective_accuracy/fit_prospect_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_prospect_rstan)
+```
+
+<br>
+
+### Goldstein-Einhorn function
+
+```{r, eval=FALSE}
+model_goldstein <- cmdstan_model("../function/stan/confidence/subjective_accuracy/confidence_goldstein.stan")
+
+fit_goldstein <- model_goldstein$sample(
+  datalist_confidence, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_goldstein_rstan <- cmdstan2rstan(fit_goldstein)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_goldstein$save_output_files("../output/data/confidence/subjective_accuracy/")
+# saveRDS(fit_goldstein, "../output/data/confidence/subjective_accuracy/fit_goldstein.rds")
+# saveRDS(fit_goldstein_rstan, "../output/data/confidence/subjective_accuracy/fit_goldstein_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_goldstein <- readRDS("../output/data/confidence/subjective_accuracy/fit_goldstein.rds")
+# fit_goldstein_rstan <- readRDS("../output/data/confidence/subjective_accuracy/fit_goldstein_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_goldstein_rstan)
+```
+
+<br>
+
+### Wu-Gonzalez function
+
+It is difficult to estimate the parameters, we first estimated the parameters for each participant using the L-BFGS method.
+
+```{r, eval=FALSE}
+model_wugonzalez_solo <- cmdstan_model("../function/stan/confidence/subjective_accuracy/confidence_wugonzalez_solo.stan")
+
+set.seed(1)
+fit_wugonzalez_solo <- p_hat_gabor %>%
+  inner_join(df_solo_group, by = c("block", "id", "trial")) %>%
+  left_join(median_powutil, by = "id") %>%
+  filter(block == "solo") %>%
+  group_by(id) %>%
+  nest() %>%
+  mutate(
+    fit = map(data, ~optimize_confidence_function(
+      .x, model = model_wugonzalez_solo, n_iter = 100,
+      refresh = 0, algorithm = "lbfgs", tol_rel_grad = 1e+18, iter = 2000,
+    )),
+    estimates = map(fit, ~{.x$mle()}),
+    lp = map_dbl(fit, ~{.x$lp()})
+  ) %>%
+  unnest(cols = c(estimates)) %>%
+  mutate(param = case_when(
+    row_number() %% 3 == 1 ~ "tau",
+    row_number() %% 3 == 2 ~ "alpha",
+    row_number() %% 3 == 0 ~ "beta",
+  )) %>%
+  pivot_wider(names_from = param, values_from = estimates) %>%
+  group_by(id) %>%
+  mutate(max_lp = max(lp)) %>%
+  filter(lp == max_lp)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(fit_wugonzalez_solo, "../output/data/confidence/subjective_accuracy/fit_wugonzalez_solo.rds")
+```
+
+```{r, include=FALSE}
+fit_wugonzalez_solo <- readRDS("../output/data/confidence/subjective_accuracy/fit_wugonzalez_solo.rds")
+```
+
+<br>
+
+We then performed the hierarchical Bayesian analysis, specifying the initial values.
+
+```{r, eval=FALSE}
+model_wugonzalez <- cmdstan_model("../function/stan/confidence/subjective_accuracy/confidence_wugonzalez.stan")
+
+fit_wugonzalez <- model_wugonzalez$sample(
+  datalist_confidence, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 1000, iter_sampling = 2000,
+  init = function() {
+    fit_wugonzalez_solo %>%
+      mutate(
+        alpha = if_else(alpha < 2 & beta < 2, 5, alpha),
+        beta = if_else(alpha == 5 & beta < 2, 0.1, beta),
+        alpha = if_else(id == 55, 7, alpha),
+        beta = if_else(id == 55, 0.5, beta),
+        alpha = if_else(id %in% c(4, 15, 44), 10, alpha),
+        beta = if_else(id %in% c(4, 15, 44), 0.05, beta)
+      ) %$%
+      list(alpha = alpha, beta = beta, tau = tau)
+    }
+  )
+
+fit_wugonzalez_rstan <- cmdstan2rstan(fit_wugonzalez)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_wugonzalez$save_output_files("../output/data/confidence/subjective_accuracy/")
+# saveRDS(fit_wugonzalez, "../output/data/confidence/subjective_accuracy/fit_wugonzalez.rds")
+# saveRDS(fit_wugonzalez_rstan, "../output/data/confidence/subjective_accuracy/fit_wugonzalez_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_wugonzalez <- readRDS("../output/data/confidence/subjective_accuracy/fit_wugonzalez.rds")
+# fit_wugonzalez_rstan <- readRDS("../output/data/confidence/subjective_accuracy/fit_wugonzalez_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_wugonzalez_rstan)
+```
+
+<br>
+
+## Model comparison
+
+We compared these models using approximate LOO-CV. The Goldstein-Einhorn function outperformed the other models.
+
+```{r, eval=FALSE}
+loo_confidence <- my_loo(
+  fit_null, fit_onepar, fit_twopar,
+  fit_prospect, fit_goldstein, fit_wugonzalez
+)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(loo_confidence, "../output/data/confidence/subjective_accuracy/loo_confidence.rds")
+```
+
+```{r, include=FALSE}
+loo_confidence <- readRDS("../output/data/confidence/subjective_accuracy/loo_confidence.rds")
+```
+
+```{r}
+loo_compare(loo_confidence$loo)
+```
+
+<br>
+
+The result remained unchanged when using WAIC.
+
+```{r, eval=FALSE}
+waic_confidence <- my_loo(
+  fit_null, fit_onepar, fit_twopar, fit_prospect,
+  fit_goldstein, fit_wugonzalez, method = "waic"
+)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(waic_confidence, "../output/data/confidence/subjective_accuracy/waic_confidence.rds")
+```
+
+```{r, include=FALSE}
+waic_confidence <- readRDS("../output/data/confidence/subjective_accuracy/waic_confidence.rds")
+```
+
+```{r}
+loo_compare(waic_confidence$waic)
+```
+
+<br>
+
+## Posterior predictive checking
+
+The posterior samples cover the actual choice frequency.
+
+```{r, message=FALSE}
+fit_goldstein %>%
+  spread_draws(y_pred[id][ori_var]) %>%
+  sample_draws(ndraws = 20, seed = 1) %>%
+  ungroup() %>%
+  mutate(
+    n_risky = y_pred,
+    draw = factor(.draw),
+    ori_var = case_when(
+      ori_var == 1 ~ 8,
+      ori_var == 2 ~ 16,
+      ori_var == 3 ~ 32,
+      ori_var == 4 ~ 64
+    )
+  ) %>%
+  ggplot(aes(n_risky, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.5) +
+  geom_line(
+    data = df_solo_group %>%
+      filter(block == "solo") %>%
+      group_by(id, ori_var) %>%
+      summarise(n_risky = sum(choice == "risky")),
+    stat = "density", color = "#009E73", size = 2
+  ) +
+  facet_wrap(vars(ori_var)) +
+  labs(x = "Choice frequency of the risky option", y = "Density") +
+  theme_facet +
+  theme(legend.position = "top")
+```
+
+<br>
+
+# Point estimates of the parameters {.tabset}
+
+We first saved the two parameters ($\alpha$ and $\beta$) of the Goldstein-Einhorn function as `median_goldstein`.
+
+$$
+q = \frac{\alpha\hat{p}^\beta}{\alpha\hat{p}^\beta+(1-\hat{p})^\beta},
+$$
+
+where $q$ is the subjective probability of a correct response in a trial.
+
+We also calculated the area surrounded by $y = x$ and the Goldstein-Einhorn function. This is an index of each participant's over/underconfidence.
+
+```{r, eval=FALSE}
+median_goldstein <- fit_goldstein %>%
+  spread_draws(alpha[id], beta[id]) %>%
+  median_qi() %>%
+  select(id, alpha, beta) %>%
+  group_by(id) %>%
+  nest() %>%
+  mutate(
+    q_area_under_p = map(data, ~integrate(
+      q_integrand, lower = 0.5, upper = 1,
+      alpha = .x$alpha, beta = .x$beta
+    )),
+    q_area_under_p = pluck(q_area_under_p, 1, "value")
+  ) %>%
+  unnest(data) %>%
+  ungroup()
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(median_goldstein, "../output/data/confidence/subjective_accuracy/median_goldstein.rds")
+```
+
+```{r, include=FALSE}
+median_goldstein <- readRDS("../output/data/confidence/subjective_accuracy/median_goldstein.rds")
+```
+
+```{r}
+median_goldstein
+```
+
+```{r}
+# This is an example of the area surrounded by q and p_hat
+param_2 <- median_goldstein %>%
+  filter(id == 10)
+
+tibble(p = seq(0.5, 1, length = 1000)) %>%
+  mutate(
+    alpha = param_2$alpha,
+    beta = param_2$beta,
+    q = goldstein_einhorn(p, alpha, beta),
+    ymin = if_else(p > q, q, p),
+    ymax = if_else(p > q, p, q),
+    fill = p > q
+  ) %>%
+  ggplot(aes(p, q)) +
+  geom_ribbon(aes(ymin = ymin, ymax = ymax, fill = fill)) +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_fill_viridis_d(direction = -1) +
+  labs(x = "Objective accuracy", y = "Subjective accuracy") +
+  guides(fill = "none")
+```
+
+<br>
+
+The relationship between $\hat{p}$ and $q$ is shown below.
+
+```{r}
+median_goldstein %>%
+  group_by(id) %>%
+  nest() %>%
+  mutate(
+    q = map(data, ~goldstein_einhorn(seq(0.5, 1, 0.001), .x$alpha, .x$beta))
+  ) %>%
+  unnest(cols = c("q", "data")) %>%
+  mutate(p_hat = seq(0.5, 1, 0.001)) %>%
+  ggplot(aes(p_hat, q, group = id, color = q_area_under_p)) +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_x_continuous(limits = c(0.5, 1)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_color_viridis_c() +
+  labs(x = "Objective accuracy", y = "Subjective accuracy") +
+  guides(color = "none")
+```
+
+<br>
+
+The figures show posterior distributions of each parameter. `mutate_yaxis_num()` is defined in `../function/r/my_functions.R`.
+
+## $\alpha$
+
+```{r, message=FALSE}
+fit_goldstein %>%
+  spread_draws(alpha[id]) %>%
+  left_join(mutate_yaxis_num(median_goldstein, column = alpha), by = "id") %>%
+  ggplot(aes(alpha, factor(yaxis_num))) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_y_discrete(breaks = c(seq(10, 60, 10))) +
+  labs(x = "\u03b1", y = "Participants")
+```
+
+<br>
+
+## $\beta$
+
+```{r, message=FALSE}
+fit_goldstein %>%
+  spread_draws(beta[id]) %>%
+  left_join(mutate_yaxis_num(median_goldstein, column = beta), by = "id") %>%
+  ggplot(aes(beta, factor(yaxis_num))) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_x_continuous(breaks = seq(0, 2.5, 0.5)) +
+  scale_y_discrete(breaks = c(seq(10, 60, 10))) +
+  labs(x = "\u03b2", y = "Participants")
+```
+
+<br>
+
+# Subjective accuracy and confidence rating
+
+## Subjective accuracy ($q$)
+
+We saved medians of individual $q$ as `median_q`.
+
+```{r, eval=FALSE}
+median_q <- fit_goldstein %>%
+  spread_draws(q[i]) %>%
+  median_qi()
+
+median_q <- p_hat_gabor %>%
+  inner_join(df_solo_group, by = c("block", "id", "trial")) %>%
+  filter(block == "solo") %>%
+  ungroup() %>%
+  mutate(q = median_q$q) %>%
+  select(block, id, trial, q, p_hat)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(median_q, "../output/data/confidence/subjective_accuracy/median_q.rds")
+```
+
+```{r, include=FALSE}
+median_q <- readRDS("../output/data/confidence/subjective_accuracy/median_q.rds")
+```
+
+<br>
+
+## Ordered logistic regression
+
+We performed ordered logistic regression predicting confidence rating (min: 1; max: 6) from subjective accuracy.
+
+```{r, eval=FALSE}
+model_rating <- cmdstan_model("../function/stan/confidence/rating/ordered_logistic_rating.stan")
+
+datalist_rating <- median_q %>%
+  left_join(df_solo, by = c("block", "id", "trial")) %>%
+  group_by(id) %>%
+  mutate(scaled_q = c(scale(q))) %>%
+  ungroup() %$%
+  list(
+    N = nrow(.),
+    L = 6,
+    N_subj = length(levels(factor(id))),
+    id = id,
+    rating = rating,
+    scaled_x = scaled_q
+  )
+
+fit_rating_q <- model_rating$sample(
+  datalist_rating, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_rating_q_rstan <- cmdstan2rstan(fit_rating_q)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_rating_q$save_output_files("../output/data/confidence/rating/")
+# saveRDS(fit_rating_q, "../output/data/confidence/rating/fit_rating_q.rds")
+# saveRDS(fit_rating_q_rstan, "../output/data/confidence/rating/fit_rating_q_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_rating_q <- readRDS("../output/data/confidence/rating/fit_rating_q.rds")
+# fit_rating_q_rstan <- readRDS("../output/data/confidence/rating/fit_rating_q_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_rating_q_rstan)
+```
+
+```{r}
+datalist_rating <- median_q %>%
+  left_join(df_solo, by = c("block", "id", "trial")) %>%
+  group_by(id) %>%
+  mutate(scaled_p_hat = c(scale(p_hat))) %>%
+  ungroup() %$%
+  list(
+    N = nrow(.),
+    L = 6,
+    N_subj = length(levels(factor(id))),
+    id = id,
+    rating = rating,
+    scaled_x = scaled_p_hat
+  )
+
+fit_rating_p <- model_rating$sample(
+  datalist_rating, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_rating_p_rstan <- cmdstan2rstan(fit_rating_p)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_rating_p$save_output_files("../output/data/confidence/rating/")
+# saveRDS(fit_rating_p, "../output/data/confidence/rating/fit_rating_p.rds")
+# saveRDS(fit_rating_p_rstan, "../output/data/confidence/rating/fit_rating_p_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_rating_p <- readRDS("../output/data/confidence/rating/fit_rating_p.rds")
+# fit_rating_p_rstan <- readRDS("../output/data/confidence/rating/fit_rating_p_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_rating_p_rstan)
+```
+
+<br>
+
+### Model comparison
+
+```{r, eval=FALSE}
+loo_rating <- my_loo(fit_rating_q, fit_rating_p)
+```
+
+```{r, eval=FALSE}
+# saveRDS(loo_rating, "../output/data/confidence/rating/loo_rating.rds")
+```
+
+```{r, include=FALSE}
+loo_rating <- readRDS("../output/data/confidence/rating/loo_rating.rds")
+```
+
+```{r}
+loo_compare(loo_rating$loo)
+```
+
+```{r, eval=FALSE}
+waic_rating <- my_loo(fit_rating_q, fit_rating_p, method = "waic")
+```
+
+```{r, eval=FALSE}
+saveRDS(waic_rating, "../output/data/confidence/rating/waic_rating.rds")
+```
+
+```{r, include=FALSE}
+waic_rating <- readRDS("../output/data/confidence/rating/waic_rating.rds")
+```
+
+```{r}
+loo_compare(waic_rating$waic)
+```
+
+<br>
+
+### Point estimates of the parameters
+
+We saved point estimates of the parameters as `median_rating`.
+
+```{r, eval=FALSE}
+median_rating <- fit_rating_q %>%
+  spread_draws(slope[id], cutoff[id][level]) %>%
+  median_qi() %>%
+  ungroup() %>%
+  select(id, level, slope, cutoff)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(median_rating, "../output/data/confidence/rating/median_rating.rds")
+```
+
+```{r, include=FALSE}
+median_rating <- readRDS("../output/data/confidence/rating/median_rating.rds")
+```
+
+<br>
+
+The figures show posterior distributions of each parameter. `mutate_yaxis_num()` is defined in `../function/r/my_functions.R`.
+
+#### Slope ($\beta$)
+
+```{r, message=FALSE}
+fit_rating_q %>%
+  spread_draws(slope[id]) %>%
+  left_join(
+    mutate_yaxis_num(filter(median_rating, level == 1), column = slope),
+    by = "id"
+  ) %>%
+  ggplot(aes(x = slope, y = factor(yaxis_num))) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_y_discrete(breaks = seq(10, 60, 10)) +
+  labs(x = "Slope (b)", y = "Participants")
+```
+
+<br>
+
+#### Cutoff points ($c$)
+
+```{r, message=FALSE, fig.height=10}
+fit_rating_q %>%
+  spread_draws(cutoff[id][level]) %>%
+  ggplot(aes(x = cutoff, y = as.factor(level))) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  xlim(-6, 6) +
+  facet_wrap(vars(id), ncol = 7) +
+  labs(x = "Cutoff points (c)", y = "Levels") +
+  theme_facet
+```
+
+<br>
+
+## Posterior predictive checking
+
+The green triangle indicates the actual frequency, and the gray line indicates the 95% interval of the posterior predictive samples.
+
+```{r, warning=FALSE, fig.height=10}
+fit_rating_q %>%
+  spread_draws(y_pred[id][rating]) %>%
+  median_qi() %>%
+  ungroup() %>%
+  rename(n = y_pred) %>%
+  ggplot(aes(rating, n)) +
+  geom_pointinterval(aes(ymin = .lower, ymax = .upper), color = "gray", size = 0.1) +
+  geom_point(
+    data = df_solo %>%
+      group_by(id, rating) %>%
+      count(),
+    color = "#009E73", shape = "triangle"
+  ) +
+  scale_x_continuous(breaks = 1:6) +
+  facet_wrap(vars(id), ncol = 7) +
+  labs(x = "Confidence rating", y = "Frequency") +
+  theme_facet +
+  theme(panel.grid.major.x = element_blank())
+```

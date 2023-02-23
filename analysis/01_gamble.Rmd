@@ -1,0 +1,384 @@
+---
+title: "Gambling block"
+author: "Kiri Kuroda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    includes:
+      in_header: ../html/header.html
+    css: ../css/style.css
+    md_extensions: -ascii_identifiers
+    df_print: paged
+    chunk_output_type: console
+    toc: yes
+    toc_float:
+      collapsed: false
+---
+
+<br>
+
+# Setup
+
+Load packages and functions.
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(magrittr)
+library(cmdstanr)
+library(shinystan)
+library(tidybayes)
+library(loo)
+library(ggridges)
+library(rstatix)
+library(effectsize)
+
+# User-defined functions
+source("../function/r/my_functions.R")
+
+# Import data
+df_gamble <- read_csv("../data/preprocessed/gamble.csv")
+df_questionnaire <- read_csv("../data/preprocessed/questionnaire.csv")
+
+# cmdstanr
+# install_cmdstan(version = "2.28.0")
+```
+
+<br>
+
+# Experimental procedure
+
+In the gambling block, participants chose a sure or risky option every trial. The risky option yielded the reward (*r* JPY) with the probability of *p* but otherwise nothing whereas the sure option guaranteed a smaller gain, 500 JPY (100 JPY $\approx$ 1 USD).  Participants worked on 47 trials of the task, and the trial order was randomized across participants.
+
+Reward magnitudes and probabilities of the risky options are shown below.
+
+```{r, message=FALSE}
+read_csv("../../material/param/gamble_main.csv") %>%
+  ggplot(aes(prob, payoff_risky)) +
+  geom_point() +
+  geom_hline(yintercept = 500, linetype = "dashed") +
+  scale_x_continuous(breaks = seq(0.3, 1, 0.1)) +
+  scale_y_continuous(breaks = seq(500, 7500, 1000), labels = scales::comma) +
+  labs(
+    x = "Reward probability of the risky option",
+    y = "Reward of the risky option (JPY)"
+  )
+```
+
+<br>
+
+# Basic data
+
+We first checked participants' choices in the task. The last column `pos` indicates the left/right counterbalancing (`sr`: sure/risky; `rs`: risky/sure). We excluded the two catch trials, where the reward probability was 1, from the following analysis.
+
+```{r}
+head(df_gamble)
+```
+
+<br>
+
+We counted the choice frequency of the risky option for each participant. The vertical line indicates the risk-neutral point (27.5). `count_n_risky()` is defined in `../function/r/my_functions.R`.
+
+```{r}
+df_gamble %>%
+  count_n_risky() %>%
+  ggplot(aes(n_risky, yaxis_num)) +
+  geom_point() +
+  geom_vline(xintercept = 27.5, linetype = "dashed") +
+  scale_x_continuous(breaks = seq(0, 45, 5), limits = c(0, 45)) +
+  scale_y_continuous(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Choice frequency of the risky option", y = "Participants")
+```
+
+<br>
+
+# Parameter estimation
+
+We estimated participants' cognitive parameters underlying risky decisions (e.g., Suzuki et al., 2016, PNAS; https://www.pnas.org/content/113/14/3755.full).
+
+<br>
+
+## Model
+
+We assumed that participants made decisions following the power utility function:
+
+$$
+U(X) = pr^\rho,
+$$
+
+where $U(X)$ denotes the utility of option $X$, $p$ denotes the reward probability, and $r$ denotes the reward magnitude of the option. $\rho$ represents the participant's risk-preference. $\rho$ is less and greater than 1 if the participant is risk-averse and risk-seeking, respectively.
+
+<br>
+
+The probability of choosing the risky option ($q(\mathrm{risky})$) is modeled by the logistic function as follows:
+
+$$
+q(\mathrm{risky})=\frac{1}{1+\exp\Bigl(-\tau\bigl(U(\mathrm{risky})-U(\mathrm{sure})\bigr)\Bigr)},
+$$
+
+where $\tau$ represents the degree of stochasticity in the choice (i.e., inverse temperature).
+
+<br>
+
+## Hierarchical Bayesian modeling
+
+We rescaled the amount of the options to 1/1000 and estimated the risk preference and inverese temperature. See the Stan code (`../function/stan/gamble/gamble_powutil.stan`) for more details of the priors.
+
+```{r, eval=FALSE}
+model_powutil <- cmdstan_model("../function/stan/gamble/gamble_powutil.stan")
+
+datalist_gamble <- df_gamble %>%
+  filter(prob < 1) %$%
+  list(
+    N = nrow(.),
+    N_subj = length(levels(factor(id))),
+    id = id,
+    choice = as.numeric(choice == "risky"),
+    reward = payoff_risky,
+    prob = prob,
+    scale = 1000
+  )
+
+fit_powutil <- model_powutil$sample(
+  datalist_gamble, seed = 1, refresh = 500,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_powutil_rstan <- cmdstan2rstan(fit_powutil)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_powutil$save_output_files("../output/data/gamble/")
+# saveRDS(fit_powutil, "../output/data/gamble/fit_powutil.rds")
+# saveRDS(fit_powutil_rstan, "../output/data/gamble/fit_powutil_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_powutil <- readRDS("../output/data/gamble/fit_powutil.rds")
+# fit_powutil_rstan <- readRDS("../output/data/gamble/fit_powutil_rstan.rds")
+```
+
+<br>
+
+## Convergence diagnostics {.tabset}
+
+All $\hat{R}$s were less than 1.1, all effective sample sizes were greater than 0.1, and all Monte Carlo standard errors were less than 0.1. You can see the detailed results via ShinyStan by running the code below.
+
+```{r, eval=FALSE}
+launch_shinystan(fit_powutil_rstan)
+```
+
+<br>
+
+## Posterior predictive checking
+
+We generated predictive data from 20 draws and compared them with the actual choice frequency.
+
+The green line indicates the actual choice frequency, and the 20 gray lines indicate the predictive data generated from the posterior distributions. The posterior predictive samples fit the actual data well.
+
+```{r}
+fit_powutil %>%
+  spread_draws(y_pred[id]) %>%
+  sample_draws(ndraws = 20, seed = 1) %>%
+  mutate(n_risky = y_pred, draw = factor(.draw)) %>%
+  ggplot(aes(n_risky, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.5) +
+  geom_line(
+    data = count_n_risky(df_gamble),
+    stat = "density", color = "#009E73", size = 2
+  ) +
+  labs(x = "Choice frequency of the risky option", y = "Density")
+```
+
+<br>
+
+## Model comparison
+
+As an alternative model, we assumed the mean-variance model (see Suzuki et al., 2016 for details) and fitted the model to data. See the Stan code `../function/stan/gamble/gamble_meanvar.stan` for details of the priors.
+
+```{r, eval=FALSE}
+model_meanvar <- cmdstan_model("../function/stan/gamble/gamble_meanvar.stan")
+
+fit_meanvar <- model_meanvar$sample(
+  datalist_gamble, seed = 1, refresh = 500,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_meanvar_rstan <- cmdstan2rstan(fit_meanvar)
+```
+
+<br>
+
+We checked the model diagnostics.
+
+```{r, eval=FALSE}
+launch_shinystan(fit_meanvar_rstan)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_meanvar$save_output_files("../output/data/gamble/")
+# saveRDS(fit_meanvar, "../output/data/gamble/fit_meanvar.rds")
+# saveRDS(fit_meanvar_rstan, "../output/data/gamble/fit_meanvar_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_meanvar <- readRDS("../output/data/gamble/fit_meanvar.rds")
+# fit_meanvar_rstan <- readRDS("../output/data/gamble/fit_meanvar_rstan.rds")
+```
+
+<br>
+
+We used approximate LOO-CV to compare the models and found that the power-utility model outperformed the mean-variance model.
+
+```{r, eval=FALSE}
+loo_gamble <- my_loo(fit_powutil, fit_meanvar)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(loo_gamble, "../output/data/gamble/loo_gamble.rds")
+```
+
+```{r, include=FALSE}
+loo_gamble <- readRDS("../output/data/gamble/loo_gamble.rds")
+```
+
+```{r}
+loo_compare(loo_gamble$loo)
+```
+
+<br>
+
+The result remained unchanged when using WAIC.
+
+```{r, eval=FALSE}
+waic_gamble <- my_loo(fit_powutil, fit_meanvar, method = "waic")
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(waic_gamble, "../output/data/gamble/waic_gamble.rds")
+```
+
+```{r, include=FALSE}
+waic_gamble <- readRDS("../output/data/gamble/waic_gamble.rds")
+```
+
+```{r}
+loo_compare(waic_gamble$waic)
+```
+
+<br>
+
+# Point estimates of the parameters {.tabset}
+
+We first saved the median of the parameters as `median_powutil`.
+
+```{r, eval=FALSE}
+median_powutil <- fit_powutil %>%
+  spread_draws(rho[id], tau[id]) %>%
+  median_qi() %>%
+  select(id, rho, tau)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(median_powutil, "../output/data/gamble/median_powutil.rds")
+```
+
+```{r, include=FALSE}
+median_powutil <- readRDS("../output/data/gamble/median_powutil.rds")
+```
+
+```{r}
+median_powutil
+```
+
+<br>
+
+The figures show posterior distributions of each parameter. `mutate_yaxis_num()` is defined in `../function/r/my_functions.R`.
+
+## Risk preference ($\rho$)
+
+```{r, message=FALSE, warning=FALSE}
+fit_powutil %>%
+  spread_draws(rho[id]) %>%
+  left_join(mutate_yaxis_num(median_powutil, column = rho), by = "id") %>%
+  ggplot(aes(rho, factor(yaxis_num))) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_x_continuous(breaks = seq(0, 2, 0.2)) +
+  scale_y_discrete(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Risk preference (\u03c1)", y = "Participants")
+```
+
+<br>
+
+## Inverse temperature ($\tau$)
+
+```{r, message=FALSE, warning=FALSE}
+fit_powutil %>%
+  spread_draws(tau[id]) %>%
+  left_join(mutate_yaxis_num(median_powutil, column = tau), by = "id") %>%
+  ggplot(aes(tau, factor(yaxis_num))) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_x_continuous(breaks = seq(0, 70, 10)) +
+  scale_y_discrete(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Inverse temperature (\u03c4)", y = "Participants")
+```
+
+<br>
+
+# Summary stats of $\rho$
+
+## Distribution
+
+The figure shows the distribution of 63 participants' $\rho$s.
+
+```{r}
+median_powutil %>%
+  ggplot(aes(rho, "")) +
+  stat_halfeye(
+    position = position_nudge(y = 0.3),
+    point_color = NA, .width = 0
+  ) +
+  geom_boxplot(
+    position = position_nudge(y = 0.2),
+    width = 0.1, outlier.shape = NA
+  ) +
+  geom_point(position = position_jitter(width = 0, height = 0.1, seed = 1)) +
+  labs(x = "Risk preference (\u03c1)", y = NULL)
+```
+
+<br>
+
+## Summary stats
+
+```{r}
+median_powutil %>%
+  summarise(
+    mean_rho = mean(rho),
+    median_rho = median(rho),
+    sd_rho = sd(rho),
+    min_rho = min(rho),
+    max_rho = max(rho)
+  )
+```
+
+<br>
+
+## One-sample t-test against 1
+
+```{r}
+median_powutil %>%
+  t_test(rho ~ 1, mu = 1)
+
+median_powutil %>%
+  cohens_d(rho ~ 1, mu = 1, data = .)
+```
+
+<br>
+
+## Risk-averse vs. Risk-seeking
+
+```{r}
+median_powutil %>%
+  count(rho > 1)
+```

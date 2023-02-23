@@ -1,0 +1,654 @@
+---
+title: "Solo block"
+author: "Kiri Kuroda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    includes:
+      in_header: ../html/header.html
+    css: ../css/style.css
+    md_extensions: -ascii_identifiers
+    df_print: paged
+    chunk_output_type: console
+    toc: yes
+    toc_float:
+      collapsed: false
+---
+
+<br>
+
+# Setup
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(magrittr)
+library(furrr)
+library(gghighlight)
+library(shinystan)
+library(tidybayes)
+library(ggridges)
+library(rstatix)
+library(effectsize)
+library(cmdstanr)
+plan(multisession)
+
+# User-defined functions
+source("../function/r/my_functions.R")
+
+# Import data
+# We modified a column name because we realized that
+# "block" sounds more intuitive than "task" in description of the analysis.
+df_gamble <- read_csv("../data/preprocessed/gamble.csv") %>%
+  rename(block = task)
+df_solo <- read_csv("../data/preprocessed/solo.csv") %>%
+  rename(block = task)
+df_group <- read_csv("../data/preprocessed/group.csv") %>%
+  rename(block = task)
+df_solo_group <- bind_rows(df_solo, df_group)
+df_gabor_solo <- read_csv("../data/preprocessed/solo_gabor.csv") %>%
+  rename(block = task)
+df_gabor_group <- read_csv("../data/preprocessed/group_gabor.csv") %>%
+  rename(block = task)
+df_gabor <- bind_rows(df_gabor_solo, df_gabor_group)
+df_questionnaire <- read_csv("../data/preprocessed/questionnaire.csv")
+
+# Import the fitting result of the gambling task
+median_powutil <- readRDS("../output/data/gamble/median_powutil.rds")
+```
+
+<br>
+
+# Task
+
+After working on the gambling task, participants performed an orientation-averaging task (Navajas et al., 2017, Nature Human Behaviour; https://www.nature.com/articles/s41562-017-0215-1).
+
+Task flow:
+
+1. A series of tilted 30 Gabor patches was presented. Variance of orientations (i.e., task difficulty) had four levels: 8, 16, 32, and 64 degrees.
+
+2. Participants judged whether the mean orientation of Gabor patches was clockwise or anticlockwise.
+
+3. Participants then chose a sure or risky option. The sure option guaranteed a certain but small reward, 500 JPY. The risky option yielded a larger reward (*r* JPY) if participants answered the orientation correctly; otherwise, participants received nothing.
+
+    - *r* had 12 levels: {`r read_csv("../../material/param/solo_payoff.csv") %>% pull(payoff_risky)`}
+    
+    - *r* was randomly jittered every trial by adding a small amount randomly sampled from {-10, 0, 10}.
+
+4. Participants rated their confidence about the judgment of orientation on a 6-point scale (1: *Not confident at all*; 6: *Very confident*).
+
+Participants worked on 96 trials of the task. Trial order was counterbalanced across participants.
+
+<br>
+
+# Basic data
+
+We first checked the data.
+
+```{r}
+head(df_solo_group)
+```
+
+<br>
+
+`line_pos`: Positions of the lines (`ca`: clockwise-anticlockwise; `ac`: anticlockwise-clockwise).
+
+`option_pos`: Positions of the options (`rs`: risky-sure; `sr`: sure-risky).
+
+<br>
+
+Orientations of the stimuli are saved as follows:
+
+```{r}
+head(df_gabor, n = 30)
+```
+
+<br>
+
+## No learning effect between blocks
+
+We first checked individual accuracy in the solo and group blocks. In the following analysis, we excluded trials in the group block where participants chose whether to vote or not before the stimulus presentation (`order == "pre"`). `remove_order_pre()` is defined in `../function/r/my_functions.R`.
+
+As shown below, almost no difference in participants' accuracies was observed between the blocks. The number at the top of each panel indicates the variance of orientations, and jittered points indicate individual data.
+
+```{r, message=FALSE}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id, ori_var, block) %>%
+  summarise(accuracy = mean(result == "correct")) %>%
+  rename(Block = block) %>%
+  ggplot(aes(accuracy, Block, color = Block, fill = Block)) +
+  stat_halfeye(
+    position = position_nudge(y = 0.2),
+    height = 0.7, point_color = NA, .width = 0
+  ) +
+  geom_point(
+    position = position_jitter(width = 0, height = 0.1, seed = 1),
+    size = 0.5
+  ) +
+  scale_x_continuous(breaks = seq(0, 1, 0.2), limits = c(0.2, 1)) +
+  scale_color_manual(values = c("black", "gray50")) +
+  scale_fill_manual(values = c("black", "gray50")) +
+  facet_wrap(vars(fct_rev(ori_var)), ncol = 4) +
+  labs(x = "Individual accuracy", y = "Block") +
+  guides(color = "none", fill = "none") +
+  theme_facet +
+  theme(panel.border = element_rect(color = "black"))
+```
+
+<br>
+
+The figure shows mean accuracies $\pm$ standard errors merged across participants.
+
+```{r, message=FALSE}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id, ori_var, block) %>%
+  summarise(ind_mean = mean(result == "correct")) %>%
+  group_by(ori_var, block) %>%
+  summarise(mean = mean(ind_mean), se = se(ind_mean)) %>%
+  rename(Block = block) %>%
+  ggplot(aes(
+    fct_rev(ori_var), mean, group = Block,
+    color = Block, shape = Block, linetype = Block
+  )) +
+  geom_point(position = position_dodge(width = 0.2)) +
+  geom_line(position = position_dodge(width = 0.2)) +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se), 
+    position = position_dodge(width = 0.2),
+    width = 0.1, linetype = "solid", show.legend = FALSE
+  ) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  scale_color_manual(values = c("black", "gray50")) +
+  ylim(0.5, 1) +
+  labs(x = "Variance of orientations", y = "Accuracy") +
+  theme(legend.position = "top")
+```
+
+<br>
+
+We conducted two-way repeated ANOVA as Navajas et al. (2017) did. The ANOVA revealed that only the main effect of task difficulty was significant. The main effect of block was not significant.
+
+```{r}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id, ori_var, block) %>%
+  summarise(accuracy = mean(result == "correct"), .groups = "drop") %>%
+  anova_test(
+    dv = accuracy,
+    within = c(ori_var, block),
+    wid = id
+  ) %>%
+  get_anova_table(correction = "GG")
+
+options(contrasts = c("contr.sum", "contr.poly"))
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id, ori_var, block) %>%
+  summarise(accuracy = mean(result == "correct"), .groups = "drop") %>%
+  aov(accuracy ~ ori_var * block + Error(id / (ori_var * block)), data = .) %>%
+  eta_squared(ci = .95)
+```
+
+<br>
+
+We thus merged the data in both blocks to estimate cognitive parameters as shown below.
+
+<br>
+
+## Risky decisions
+
+In the solo block, participants chose a risky option more frequently when the task was easier and the reward was larger. Error bars indicate standard errors of the means.
+
+```{r, message=FALSE}
+df_solo %>%
+  mutate(ori_var = factor(ori_var)) %>%
+  group_by(id, ori_var, payoff_risky) %>%
+  summarise(ind_mean = mean(choice == "risky")) %>%
+  group_by(ori_var, payoff_risky) %>%
+  summarise(mean = mean(ind_mean), se = se(ind_mean)) %>%
+  ggplot(aes(payoff_risky, mean, color = factor(ori_var))) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 10) +
+  scale_x_continuous(breaks = seq(500, 1750, 250), labels = scales::comma) +
+  scale_color_viridis_d(direction = -1) +
+  xlim(500, 1600) +
+  labs(
+    x = "Reward of the risky option (JPY)",
+    y = "Choice rate of the risky option",
+    color = "Variance of orientations"
+  ) +
+  theme(legend.position = "top")
+```
+
+<br>
+
+Not surprisingly, a positive correlation was observed between the choice frequency of the risky option in the solo block and $\rho$, which was estimated from the gambling task.
+
+```{r}
+df_solo %>%
+  group_by(id) %>%
+  summarise(n_risky = sum(choice == "risky")) %>%
+  left_join(median_powutil, by = "id") %>%
+  ggplot(aes(rho, n_risky)) +
+  geom_smooth(method = lm, formula = y ~ x, se = FALSE) +
+  geom_point() + 
+  scale_x_continuous(breaks = seq(0.2, 1.4, 0.2)) +
+  labs(
+    x = "Risk preference (\u03c1)",
+    y = "Choice frequency of the risky option"
+  )
+```
+
+<br>
+
+The positive correlation between the above two variables:
+
+```{r}
+df_solo %>%
+  group_by(id) %>%
+  summarise(n_risky = sum(choice == "risky")) %>%
+  left_join(median_powutil, by = "id") %$%
+  cor.test(~ rho + n_risky)
+```
+
+<br>
+
+## Confidence rating
+
+The figure shows mean confidence $\pm$ SE as a function of the result and the task difficulty. This pattern is similar to the result in Navajas et al. (2017). 
+
+```{r, message=FALSE}
+df_solo %>%
+  mutate(
+    ori_var = factor(ori_var),
+    result = if_else(result == "correct", "Correct", "Wrong")
+  ) %>%
+  group_by(id, result, ori_var) %>%
+  summarise(ind_mean = mean(rating)) %>%
+  group_by(result, ori_var) %>%
+  summarise(mean = mean(ind_mean), se = se(ind_mean)) %>%
+  rename(Result = result) %>%
+  ggplot(aes(
+    fct_rev(ori_var), mean, group = Result,
+    color = Result, linetype = Result, shape = Result
+  )) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se),
+    width = 0.1, linetype = "solid", show.legend = FALSE
+  ) +
+  scale_y_continuous(breaks = 1:6, limits = c(1, 6)) +
+  scale_color_manual(values = c("red3", "#56B4E9")) +
+  labs(x = "Variance of orientations", y = "Confidence rating") +
+  theme(legend.position = "top")
+```
+
+<br>
+
+## Response time
+
+The figure shows the response time as a function of the task difficulty and the correct/wrong responses.
+
+```{r, message=FALSE}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id, result, ori_var) %>%
+  summarise(ind_mean = mean(judge_rt)) %>%
+  group_by(result, ori_var) %>%
+  summarise(mean = mean(ind_mean), se = se(ind_mean)) %>%
+  rename(Result = result) %>%
+  ggplot(aes(
+    fct_rev(ori_var), mean, group = Result,
+    color = Result, linetype = Result, shape = Result
+  )) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se),
+    width = 0.1, linetype = "solid", show.legend = FALSE
+  ) +
+  scale_color_manual(values = c("red3", "#56B4E9")) +
+  labs(x = "Variance of orientations", y = "Response time (secs.)") +
+  theme(legend.position = "top")
+```
+
+<br>
+
+# Parameter estimation
+
+We then estimated perceptual parameters in the task (see Navajas et al., 2017, Nature Human Behaviour).
+
+<br>
+
+## Model
+
+Our model is based on Navajas et al. (2017). We assume that participants updated the estimate of mean orientation as follows:
+
+$$
+\mu_{i} = \lambda\mu_{i-1} + \theta_{i} + \epsilon\theta_{i}\xi_{i}
+$$
+
+where $\mu_{i}$ is the estimate of the mean after *i* samples ($\mu_{0}=0$), $\lambda$ determines the relative weighting of recent versus past samples, $\theta_{i}$ is the actual orientation of the $i_{th}$ sample in the sequence, $\xi_{i}$ is sampled from the standard normal distribution, and $\epsilon$ is a positive free parameter indicating the strength of the noise.
+
+The multiplicative nature of the noise ensures that the uncertainty in the update of the estimate scales with the magnitude of $\theta_{i}$. At the end of the sequence, choice is determined by the sign of the final value of the mean ($\mu_{30}$): the agent chooses clockwise if $\mu_{30}$ is positive, and anticlockwise if $\mu_{30}$ is negative.
+
+<br>
+
+## Simulation
+
+We first defined the functions for the simulation in `../function/r/my_functions.R`.
+
+```{r}
+calc_mu
+```
+
+```{r}
+sim_updating_model
+```
+
+<br>
+
+For example, assume that a participant have $\epsilon = 1$ and $\lambda = 0.95$. If he/she worked on a trial (thetas' range: -13 ~ +19) 1000 times, the 1000 estimates is simulated as follows (three pathways are highlighted as example):
+
+```{r, warning=FALSE}
+n_theta <- 30
+min_theta <- -13
+max_theta <- 19
+epsilon <- 1
+lambda <- 0.95
+
+sim_updating_model(
+  n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+  epsilon = epsilon, lambda = lambda, n_sim = 1000, seed = 1
+) %>%
+  ggplot(aes(order, mu, group = sim_id, color = sim_id)) +
+  geom_line() +
+  gghighlight(
+    sim_id <= 3, use_direct_label = FALSE,
+    unhighlighted_params = list(size = 0.1)
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_color_viridis_c() +
+  labs(x = "Gabor patches", y = "\u03bc") +
+  guides(color = "none")
+```
+
+<br>
+
+The figure shows 100000 samples of $\mu_{30}$.
+
+```{r}
+sim_updating_model(
+  n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+  epsilon = epsilon, lambda = lambda, n_sim = 100000, seed = 1
+) %>%
+  filter(order == 30) %>%
+  ggplot(aes(mu)) +
+  geom_histogram(binwidth = 10, color = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(x = "\u03bc30", y = "Samples")
+```
+
+<br>
+
+The $\mu_{30}$ converges to the normal distribution. The mean is
+
+$$
+\bar{\mu}_{30} = \sum_{i=1}^{30}\lambda^{30-i}\theta_{i},
+$$
+
+and the variance is
+
+$$
+\sigma^2_{30}=\epsilon^2\sum^{30}_{i=1}\lambda^{2(30-i)}\theta_{i}^2.
+$$
+
+<br>
+
+In the example above, the mean, *SD*, and $\Phi$ (cumulative probability of the normal distribution) is:
+
+```{r}
+stat_updating_model(
+  n_theta = n_theta, min_theta = min_theta, max_theta = max_theta,
+  epsilon = epsilon, lambda = lambda, seed = 1
+)
+```
+
+<br>
+
+`stat_updating_model()` is defined in `../function/r/my_functions.R`.
+
+<br>
+
+## Hierarchical Bayesian modeling
+
+See the Stan code (`../function/gabor/stochastic_updating.stan`) for more details of the priors.
+
+```{r, eval=FALSE}
+# Make a data set for the estimation
+tmp_df_solo_group <- df_solo_group %>%
+  # In the next line, exclude trials in the group block
+  # where participants chose individual or majority
+  # prior to the stimulus presentation (order == "pre").
+  filter(order == "post" | is.na(order)) %>%
+  mutate(
+    judge  = as.numeric(judge == "clockwise"),
+    answer = as.numeric(answer == "clockwise")
+  ) %>%
+  arrange(id, trial, block)
+
+tmp_df_gabor <- df_gabor %>%
+  inner_join(tmp_df_solo_group, by = c("id", "trial", "block")) %>%
+  rename(theta = ori) %>%
+  arrange(id, trial, block)
+
+datalist_gabor <- tmp_df_solo_group %$%
+  list(
+    N = nrow(.),
+    N_subj = length(levels(factor(id))),
+    id = id,
+    judge = judge,
+    answer = answer,
+    theta_var = ori_var,
+    theta = tmp_df_gabor %>%
+      pull(theta) %>%
+      matrix(nrow = 30, ncol = nrow(tmp_df_solo_group))
+  )
+
+rm(tmp_df_solo_group, tmp_df_gabor)
+
+# Compile
+model_gabor <- cmdstan_model("../function/stan/gabor/stochastic_updating.stan")
+
+# Sampling
+set.seed(1)
+fit_gabor <- model_gabor$sample(
+  datalist_gabor, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000,
+  init = function() {list(
+    epsilon = runif(63, 1, 2),
+    lambda = runif(63, 0.9, 1)
+  )}
+)
+
+fit_gabor_rstan <- cmdstan2rstan(fit_gabor)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_gabor$save_output_files("../output/data/gabor/")
+# saveRDS(fit_gabor, "../output/data/gabor/fit_gabor.rds")
+# saveRDS(fit_gabor_rstan, "../output/data/gabor/fit_gabor_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_gabor <- readRDS("../output/data/gabor/fit_gabor.rds")
+# fit_gabor_rstan <- readRDS("../output/data/gabor/fit_gabor_rstan.rds")
+```
+
+<br>
+
+We checked the model diagnostics.
+
+```{r, eval=FALSE}
+launch_shinystan(fit_gabor_rstan)
+```
+
+<br>
+
+## Posterior predictive checking
+
+We generated predictive data from 20 draws and compared it with the actual choice data. The posterior predictive samples fit the actual data well.
+
+```{r, message=FALSE}
+fit_gabor %>%
+  spread_draws(y_pred[id][ori_var]) %>%
+  sample_draws(ndraws = 20, seed = 1) %>%
+  ungroup() %>%
+  mutate(
+    n_correct = y_pred,
+    draw = factor(.draw),
+    ori_var = case_when(
+      ori_var == 1 ~ 8,
+      ori_var == 2 ~ 16,
+      ori_var == 3 ~ 32,
+      ori_var == 4 ~ 64
+    )
+  ) %>%
+  ggplot(aes(n_correct, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.5) +
+  geom_line(
+    data = df_solo_group %>%
+      filter(order == "post" | is.na(order)) %>%
+      group_by(id, ori_var) %>%
+      summarise(n_correct = sum(result == "correct")),
+    stat = "density", color = "#009E73", size = 2
+  ) +
+  facet_wrap(vars(ori_var)) +
+  labs(x = "The number of correct responses", y = "Density") +
+  theme_facet +
+  theme(legend.position = "top")
+```
+
+<br>
+
+# Point estimates of the parameters {.tabset}
+
+We first saved the medians of the parameters as `median_gabor`.
+
+```{r, eval=FALSE}
+median_gabor <- fit_gabor %>%
+  spread_draws(epsilon[id], lambda[id]) %>%
+  median_qi() %>%
+  select(id, epsilon, lambda) %>%
+  mutate(gamma = -epsilon)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(median_gabor, "../output/data/gabor/median_gabor.rds")
+```
+
+```{r, include=FALSE}
+median_gabor <- readRDS("../output/data/gabor/median_gabor.rds")
+```
+
+<br>
+
+The figures show posterior distributions of each parameter. `mutate_yaxis_num()` is defined in `../function/r/my_functions.R`.
+
+## Perceptual noise ($\epsilon$)
+
+```{r, message=FALSE, warning=FALSE}
+fit_gabor %>%
+  spread_draws(epsilon[id]) %>%
+  left_join(mutate_yaxis_num(median_gabor, column = epsilon), by = "id") %>%
+  ggplot(aes(epsilon, factor(yaxis_num))) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_x_continuous(breaks = seq(0, 7, 0.5)) +
+  scale_y_discrete(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Perceptual noise (\u03b5)", y = "Participants")
+```
+
+<br>
+
+## Relative weight for past information ($\lambda$)
+
+```{r, message=FALSE}
+fit_gabor %>%
+  spread_draws(lambda[id]) %>%
+  left_join(mutate_yaxis_num(median_gabor, column = lambda), by = "id") %>%
+  ggplot(aes(lambda, factor(yaxis_num))) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_x_continuous(breaks = seq(0.8, 1.2, 0.05)) +
+  scale_y_discrete(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Relative weight for past information (\u03bb)", y = "Participants")
+```
+
+<br>
+
+# Summary stats of $\gamma$
+
+By definition, $\epsilon$ captures the strength of the participant's perceptual noise. We thus decided to use the minus of $\epsilon$ as the competence parameter. Hereafter, we refer this parameter as $\gamma$.
+```{r}
+library(WRS2)
+```
+
+```{r}
+median_gabor %>%
+  summarise(
+    mean_gamma = mean(gamma),
+    median_gamma = median(gamma),
+    sd_gamma = sd(gamma),
+    min_gamma = min(gamma),
+    max_gamma = max(gamma)
+  )
+```
+
+<br>
+
+The figure shows that $\gamma$ reflects participants' performance in the task.
+
+```{r}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id) %>%
+  summarise(mean = mean(result == "correct")) %>%
+  left_join(median_gabor, by = "id") %>%
+  ggplot(aes(gamma, mean)) +
+  geom_smooth(method = lm, formula = y ~ x, se = FALSE) +
+  geom_point() +
+  labs(x = "Competence (\u03b3)", y = "Individual accuracy")
+```
+
+<br>
+
+The positive correlation between the above two variables:
+
+```{r}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id) %>%
+  summarise(mean = mean(result == "correct")) %>%
+  left_join(median_gabor, by = "id") %$%
+  pbcor(x = lambda, y = mean)
+```
+
+
+```{r}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id) %>%
+  summarise(mean = mean(result == "correct")) %>%
+  left_join(median_gabor, by = "id") %$%
+  cor.test(~ gamma + lambda, method = "s")
+```
+```{r}
+median_gabor %>%
+  ggplot(aes(gamma, lambda)) +
+  geom_point()
+```
+

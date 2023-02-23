@@ -1,0 +1,518 @@
+---
+title: "Voting and the performance of majorities"
+author: "Kiri Kuroda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    includes:
+      in_header: ../html/header.html
+    css: ../css/style.css
+    md_extensions: -ascii_identifiers
+    df_print: paged
+    chunk_output_type: console
+    toc: yes
+    toc_float:
+      collapsed: false
+---
+
+<br>
+
+# Setup
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(magrittr)
+library(cmdstanr)
+library(shinystan)
+library(tidybayes)
+library(ggridges)
+library(colorspace)
+library(furrr)
+plan(multisession)
+
+# User-defined functions
+source("../function/r/my_functions.R")
+
+# Import data
+# We modified a column name because we realized that
+# "block" sounds more intuitive than "task" in description of the analysis
+df_solo <- read_csv("../data/preprocessed/solo.csv") %>%
+  rename(block = task)
+df_group <- read_csv("../data/preprocessed/group.csv") %>%
+  rename(block = task)
+df_solo_group <- bind_rows(df_solo, df_group)
+df_questionnaire <- read_csv("../data/preprocessed/questionnaire.csv")
+
+# Import the fitting results
+median_powutil <- readRDS("../output/data/gamble/median_powutil.rds")
+median_gabor <- readRDS("../output/data/gabor/median_gabor.rds")
+median_goldstein <- readRDS("../output/data/confidence/subjective_accuracy/median_goldstein.rds")
+
+# cmdstanr
+# install_cmdstan(version = "2.28.0")
+```
+
+<br>
+
+# Voting rate
+
+Not surprisingly, the voting rate decreased along with the reward of the exit option.
+
+```{r, message=FALSE}
+df_group %>%
+  filter(order == "post") %>%
+  mutate(ori_var = factor(ori_var)) %>%
+  group_by(id, ori_var, payoff_solo) %>%
+  summarise(ind_mean = mean(choice == "group")) %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(mean = mean(ind_mean), se = se(ind_mean)) %>%
+  ggplot(aes(x = payoff_solo, y = mean, color = ori_var)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 10) +
+  scale_x_continuous(labels = scales::comma) +
+  scale_color_viridis_d() +
+  labs(
+    x = "Reward of the exit option (JPY)",
+    y = "Voting rate",
+    color = "Variance of orientations"
+  ) +
+  theme(legend.position = "top")
+```
+
+<br>
+
+## Mixed logistic regression
+
+We performed a mixed logistic regression predicting the voting rate from individual and task parameters.
+
+```{r, eval=FALSE}
+model_voting <- cmdstan_model("../function/stan/group/voting_logistic.stan")
+
+datalist_logistic <- df_group %>%
+  filter(order == "post") %>%
+  left_join(
+    median_powutil %>%
+      mutate(scaled_rho = c(scale(rho))),
+    by = "id"
+  ) %>%
+  left_join(
+    median_gabor %>%
+      mutate(
+        scaled_gamma = c(scale(gamma)),
+        scaled_lambda = c(scale(lambda))
+      ),
+    by = "id"
+  ) %>%
+  left_join(
+    median_goldstein %>%
+      mutate(scaled_confidence = c(scale(q_area_under_p))),
+    by = "id"
+  ) %>%
+  mutate(
+    payoff_solo = payoff_solo + payoff_jitter,
+    scaled_reward = c(scale(payoff_solo)),
+    scaled_var = c(scale(ori_var)),
+  ) %$%
+  list(
+    N = nrow(.),
+    N_subj = length(levels(factor(id))),
+    id = id,
+    choice = as.numeric(choice == "solo"),
+    scaled_reward = scaled_reward,
+    scaled_var = scaled_var,
+    theta_var = ori_var,
+    scaled_rho = scaled_rho,
+    scaled_gamma = scaled_gamma,
+    scaled_lambda = scaled_lambda,
+    scaled_confidence = scaled_confidence
+  )
+
+fit_voting <- model_voting$sample(
+  datalist_logistic, seed = 1, refresh = 100,
+  chains = 4, iter_warmup = 500, iter_sampling = 2000
+)
+
+fit_voting_rstan <- cmdstan2rstan(fit_voting)
+```
+
+```{r, include=FALSE, eval=FALSE}
+# fit_voting$save_output_files("../output/data/group/")
+# saveRDS(fit_voting, "../output/data/group/fit_voting.rds")
+# saveRDS(fit_voting_rstan, "../output/data/group/fit_voting_rstan.rds")
+```
+
+```{r, include=FALSE}
+fit_voting <- readRDS("../output/data/group/fit_voting.rds")
+# fit_voting_rstan <- readRDS("../output/data/group/fit_voting_rstan.rds")
+```
+
+```{r, eval=FALSE}
+launch_shinystan(fit_voting_rstan)
+```
+
+<br>
+
+## Estimates {.tabset}
+
+Even when we controlled for the task parameters, the confidence parameter promoted participants to exit from the group. Risk preference and competence had positive effects on the exit rate, but the posterior probability was lower than 95%.
+
+```{r}
+fit_voting %>%
+  spread_draws(coef_rho, coef_gamma, coef_confidence) %>%
+  pivot_longer(
+    cols = starts_with("coef_"),
+    names_to = "param",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value, y = param)) +
+  stat_pointinterval(
+    .width = 0.95, color = lighten("#00215d", 0.4), size = 2.5,
+  ) +
+  stat_pointinterval(
+    .width = 0.8, color = lighten("#00215d", 0.2), size = 5
+  ) +
+  stat_pointinterval(
+    .width = 0.5, color = "#00215d", interval_size = 10
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_y_discrete(labels = c("Confidence", "Competence", "Risk preference")) +
+  labs(x = "Coefficients", y = "Predictors") +
+  theme(axis.text.y = element_text(hjust = 0))
+```
+
+<br>
+
+Coefficients for the task parameters are shown below.
+
+### Intercept
+
+```{r}
+fit_voting %>%
+  spread_draws(intercept[id]) %>%
+  median_qi() %>%
+  arrange(intercept) %>%
+  mutate(yaxis_num = row_number()) %>%
+  ggplot(aes(intercept, yaxis_num)) +
+  geom_point() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_y_continuous(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Intercept", y = "Participants")
+```
+
+<br>
+
+### Coefficients for the reward
+
+```{r}
+fit_voting %>%
+  spread_draws(coef_reward[id]) %>%
+  median_qi() %>%
+  arrange(coef_reward) %>%
+  mutate(yaxis_num = row_number()) %>%
+  ggplot(aes(coef_reward, yaxis_num)) +
+  geom_point() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_y_continuous(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Coefficients for the reward", y = "Participants")
+```
+
+<br>
+
+### Coefficients for the variance of orientations
+
+```{r}
+fit_voting %>%
+  spread_draws(coef_var[id]) %>%
+  median_qi() %>%
+  arrange(coef_var) %>%
+  mutate(yaxis_num = row_number()) %>%
+  ggplot(aes(coef_var, yaxis_num)) +
+  geom_point() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_y_continuous(breaks = c(seq(10, 60, 10))) +
+  labs(x = "Coefficients for the variance", y = "Participants")
+```
+
+<br>
+
+## Posterior predictive checking
+
+```{r, message=FALSE}
+fit_voting %>%
+  spread_draws(y_pred[id][ori_var]) %>%
+  sample_draws(ndraws = 20, seed = 1) %>%
+  ungroup() %>%
+  mutate(
+    n_exit = y_pred,
+    draw = factor(.draw),
+    ori_var = case_when(
+      ori_var == 1 ~ 8,
+      ori_var == 2 ~ 16,
+      ori_var == 3 ~ 32,
+      ori_var == 4 ~ 64
+    )
+  ) %>%
+  ggplot(aes(n_exit, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.5) +
+  geom_line(
+    data = df_group %>%
+      filter(order == "post") %>%
+      group_by(id, ori_var) %>%
+      summarise(n_exit = sum(choice == "solo")),
+    stat = "density", color = "#009E73", size = 2
+  ) +
+  facet_wrap(vars(ori_var)) +
+  labs(x = "Choice frequency of the solo option", y = "Density") +
+  theme_facet +
+  theme(legend.position = "top")
+```
+
+<br>
+
+# Actual majority accuracy
+
+We calculated the actual accuracy of majority by sampling the votes 10000 times. We discarded the runs in which no participant had voted.
+
+```{r, eval=FALSE}
+sim_actual_voting <- 1:10000 %>%
+  future_imap_dfr(~{
+    tmp <- df_group %>%
+      group_by(id, ori_var, payoff_solo) %>%
+      sample_n(1) %>%
+      group_by(ori_var, payoff_solo) %>%
+      sample_n(25) %>%
+      summarise(
+        n_group = sum(choice == "group"),
+        n_solo = sum(choice == "solo"),
+        n_group_correct = sum(choice == "group" & result == "correct"),
+        n_solo_correct = sum(choice == "solo" & result == "correct"),
+        .groups = "drop"
+      ) %>%
+      rowwise() %>%
+      mutate(
+        result_group = case_when(
+          n_group == 0 ~ "abort",
+          n_group_correct > n_group / 2 ~ "correct",
+          n_group_correct < n_group / 2 ~ "wrong",
+          n_group_correct == n_group / 2 ~ sample(c("correct", "wrong"), 1)
+        ),
+        accuracy_solo = n_solo_correct / n_solo,
+        sim_id = .y
+      )
+    },
+    .options = furrr_options(seed = 1)
+  )
+```
+
+```{r, include=FALSE, eval=FALSE}
+# saveRDS(sim_actual_voting, "../output/data/group/sim_actual_voting.rds")
+```
+
+```{r, include=FALSE}
+sim_actual_voting <- readRDS("../output/data/group/sim_actual_voting.rds")
+```
+
+<br>
+
+```{r}
+sim_actual_voting %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(mean = mean(accuracy_solo, na.rm = TRUE)) %>%
+  ggplot(aes(payoff_solo, mean)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(vars(ori_var))
+```
+
+
+```{r}
+sim_actual_voting %>%
+  filter(result_group != "abort") %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(mean = mean(result_group == "correct")) %>%
+  ggplot(aes(payoff_solo, mean)) +
+  geom_line() +
+  facet_wrap(vars(ori_var))
+```
+
+
+<br>
+
+# Group-size
+
+```{r, eval=FALSE}
+sim_condorcet_voting <- 1:10000 %>%
+  future_imap_dfr(~{
+    1:25 %>%
+      future_map_dfr(~{
+        df_group %>%
+          filter(order == "post") %>%
+          group_by(id, ori_var) %>%
+          slice_sample(n = 1) %>%
+          group_by(ori_var) %>%
+          slice_sample(n = .x) %>%
+          summarise(
+            n_group = n(),
+            n_group_correct = sum(result == "correct"),
+            .groups = "drop"
+          ) %>%
+          rowwise() %>%
+          mutate(
+            result_group = case_when(
+              n_group_correct > n_group / 2 ~ "correct",
+              n_group_correct < n_group / 2 ~ "wrong",
+              n_group_correct == n_group / 2 ~ sample(c("correct", "wrong"), 1)
+            )
+          )
+        },
+        .options = furrr_options(seed = .y)
+      ) %>%
+      mutate(sim_id = .y, group = "condorcet")
+    },
+    .options = furrr_options(seed = 1)
+  )
+```
+
+```{r, eval=FALSE}
+sim_k_voting <- 1:10000 %>%
+  future_imap_dfr(~{
+    1:25 %>%
+      future_map_dfr(~{
+        df_group %>%
+          filter(order == "post" & choice == "group") %>%
+          group_by(id, ori_var) %>%
+          slice_sample(n = 1) %>%
+          group_by(ori_var) %>%
+          slice_sample(n = .x) %>%
+          group_by(ori_var) %>%
+          summarise(
+            n_group = n(),
+            n_group_correct = sum(result == "correct"),
+            .groups = "drop"
+          ) %>%
+          rowwise() %>%
+          mutate(
+            result_group = case_when(
+              n_group_correct > n_group / 2 ~ "correct",
+              n_group_correct < n_group / 2 ~ "wrong",
+              n_group_correct == n_group / 2 ~ sample(c("correct", "wrong"), 1)
+            )
+          )
+        },
+        .options = furrr_options(seed = .y)
+      ) %>%
+      mutate(sim_id = .y, group = "real")
+    },
+    .options = furrr_options(seed = 1)
+  )
+```
+
+```{r, eval=FALSE}
+sim_groupsize_voting <- bind_rows(sim_condorcet_voting, sim_k_voting)
+```
+
+```{r}
+# saveRDS(sim_condorcet_voting, "../output/data/group/sim_condorcet_voting.rds")
+# saveRDS(sim_k_voting, "../output/data/group/sim_k_voting.rds")
+# saveRDS(sim_groupsize_voting, "../output/data/group/sim_groupsize_voting.rds")
+```
+
+```{r, include=FALSE}
+sim_condorcet_voting <- readRDS("../output/data/group/sim_condorcet_voting.rds")
+sim_k_voting <- readRDS("../output/data/group/sim_k_voting.rds")
+sim_groupsize_voting <- readRDS("../output/data/group/sim_condorcet_voting.rds")
+```
+
+```{r}
+sim_forced_voting <- 1:10000 %>%
+  future_imap_dfr(~{
+    tmp <- df_group %>%
+      group_by(id, ori_var) %>%
+      sample_n(1) %>%
+      group_by(ori_var) %>%
+      sample_n(25) %>%
+      summarise(
+        n_correct = sum(result == "correct"),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        result_group = if_else(n_correct >= 13, "correct", "wrong"),
+        sim_id = .y
+      )
+    },
+    .options = furrr_options(seed = 1)
+  )
+```
+
+
+```{r}
+saveRDS(sim_forced_voting, "../output/data/group/sim_forced_voting.rds")
+```
+
+
+
+```{r}
+tibble(a=1:4) %>%
+  sample_n(sum(a == 2), )
+```
+
+```{r}
+df_group %>%
+  group_by(id, ori_var, payoff_solo) %>%
+  slice_sample(n = 1) %>%
+  group_by(ori_var, payoff_solo) %>%
+  slice_sample(n = 25) %>%
+  mutate(n_group = sum(choice == "group")) %>%
+  filter(row_number() <= n_group)
+```
+
+```{r, eval=FALSE}
+sim_nobias_voting <- 1:10000 %>%
+  future_imap_dfr(~{
+    tmp <- df_group %>%
+      group_by(id, ori_var, payoff_solo) %>%
+      slice_sample(n = 1) %>%
+      group_by(ori_var, payoff_solo) %>%
+      slice_sample(n = 25) %>%
+      mutate(n_group = sum(choice == "group")) %>%
+      filter(row_number() <= n_group) %>%
+      summarise(
+        n_group = n(),
+        n_group_correct = sum(result == "correct"),
+        .groups = "drop"
+      ) %>%
+      rowwise() %>%
+      mutate(
+        result_group = case_when(
+          n_group == 0 ~ "abort",
+          n_group_correct > n_group / 2 ~ "correct",
+          n_group_correct < n_group / 2 ~ "wrong",
+          n_group_correct == n_group / 2 ~ sample(c("correct", "wrong"), 1)
+        ),
+        sim_id = .y
+      )
+    },
+    .options = furrr_options(seed = 1)
+  )
+```
+
+```{r}
+saveRDS(sim_nobias_voting, "../output/data/group/sim_nobias_voting.rds")
+```
+
+```{r}
+sim_nobias_voting <- readRDS("../output/data/group/sim_nobias_voting.rds")
+```
+
+
+```{r}
+sim_nobias_voting %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(mean = mean(result_group == "correct")) %>%
+  ggplot(aes(payoff_solo, mean)) +
+  geom_line() +
+  facet_wrap(vars(ori_var))
+```
+

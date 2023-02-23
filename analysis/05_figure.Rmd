@@ -1,0 +1,1123 @@
+---
+title: "Figures"
+author: "Kiri Kuroda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    includes:
+      in_header: ../html/header.html
+    css: ../css/style.css
+    md_extensions: -ascii_identifiers
+    df_print: paged
+    chunk_output_type: console
+    toc: yes
+    toc_float:
+      collapsed: false
+---
+
+<br>
+
+# Setup
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(colorspace)
+library(patchwork)
+library(tidybayes)
+library(GGally)
+library(furrr)
+library(magrittr)
+
+# User-defined functions
+source("../function/r/my_functions.R")
+source("../function/r/figure_settings.R")
+
+# Import data
+# We modified a column name because we realized that
+# "block" sounds more intuitive than "task" in description of the analysis
+df_gamble <- read_csv("../data/preprocessed/gamble.csv") %>%
+  rename(block = task)
+df_solo <- read_csv("../data/preprocessed/solo.csv") %>%
+  rename(block = task)
+df_group <- read_csv("../data/preprocessed/group.csv") %>%
+  rename(block = task)
+df_solo_group <- bind_rows(df_solo, df_group)
+df_gabor_solo <- read_csv("../data/preprocessed/solo_gabor.csv") %>%
+  rename(block = task)
+df_gabor_group <- read_csv("../data/preprocessed/group_gabor.csv") %>%
+  rename(block = task)
+df_gabor <- bind_rows(df_gabor_solo, df_gabor_group)
+df_questionnaire <- read_csv("../data/preprocessed/questionnaire.csv")
+
+# Import the fitting results
+median_powutil <- readRDS("../output/data/gamble/median_powutil.rds")
+median_gabor <- readRDS("../output/data/gabor/median_gabor.rds")
+median_goldstein <- readRDS("../output/data/confidence/subjective_accuracy/median_goldstein.rds")
+median_rating <- readRDS("../output/data/confidence/rating/median_rating.rds")
+fit_powutil <- readRDS("../output/data/gamble/fit_powutil.rds")
+fit_gabor <- readRDS("../output/data/gabor/fit_gabor.rds")
+fit_goldstein <- readRDS("../output/data/confidence/subjective_accuracy/fit_goldstein.rds")
+fit_rating_q <- readRDS("../output/data/confidence/rating/fit_rating_q.rds")
+fit_voting <- readRDS("../output/data/group/fit_voting.rds")
+# sim_actual_voting <- readRDS("../output/data/group/sim_actual_voting.rds")
+# sim_groupsize_voting <- readRDS("../output/data/group/sim_groupsize_voting.rds")
+```
+
+<br>
+
+# Figure 1
+
+## Figure 1c
+
+```{r}
+fig_1c <- expand_grid(
+  theta = -70:70,
+  variance = c(8, 16, 32, 64)
+) %>%
+  mutate(
+    density = dunif(theta, 3 - variance, 3 + variance)
+  ) %>%
+  ggplot(aes(theta, density, group = variance, color = factor(variance))) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = 3, linetype = "dashed") +
+  scale_x_continuous(breaks = seq(-60, 60, 20)) +
+  scale_color_viridis_d() +
+  labs(x = "Orientation (degrees)", y = "Density") +
+  guides(color = "none") +
+  theme(axis.text.x = element_text(size = 6))
+
+fig_1c
+
+ggsave(
+  "../output/figure/figure_1c.pdf", fig_1c,
+  units = "cm", width = 4.5, height = 3.5
+)
+```
+
+# Figure 2
+
+## Figure 2a
+
+```{r}
+fig_2a <- df_group %>%
+  filter(order == "post") %>%
+  mutate(
+    ori_var = case_when(
+      ori_var == 8 ~ 1,
+      ori_var == 16 ~ 2,
+      ori_var == 32 ~ 3,
+      ori_var == 64 ~ 4
+    ),
+    ori_var = factor(ori_var)
+  ) %>%
+  group_by(id, ori_var, payoff_solo) %>%
+  summarise(ind_mean = mean(choice == "solo")) %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(mean = mean(ind_mean), se = se(ind_mean)) %>%
+  ggplot(aes(payoff_solo, mean, color = ori_var)) +
+  geom_point(size = 1) +
+  geom_line(show.legend = FALSE) +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se),
+    width = 10, show.legend = FALSE
+  ) +
+  scale_x_continuous(
+    breaks = c(500, 550, 590, 640, 700, 770, 850, 940, 1040, 1150, 1270, 1400),
+    labels = c("500","","","","700","","","940","","","1,270","")
+  ) +
+  scale_color_viridis_d() +
+  labs(
+    x = "12 levels of the reward of the opt-out (JPY)",
+    y = "P(opt-out)",
+    color = "Task difficulty",
+    tag = "a"
+  ) +
+  guides(color = "none") +
+  theme(plot.tag.position = c(0.01, 0.99))
+
+fig_2a
+```
+
+## Figure 2b
+
+```{r}
+fig_2b <- fit_voting %>%
+  spread_draws(coef_rho, coef_gamma, coef_confidence) %>%
+  pivot_longer(
+    cols = starts_with("coef_"),
+    names_to = "param",
+    values_to = "value"
+  ) %>%
+  mutate(
+    param = factor(param),
+    param = fct_relevel(param, c("coef_rho", "coef_gamma", "coef_confidence"))
+  ) %>%
+  ggplot(aes(x = value, y = param)) +
+  geom_vline(xintercept = 0, color = "gray", linetype = "dashed") +
+  stat_pointinterval(
+    .width = 0.95, color = lighten("#333333", 0.4), size = 1.25,
+  ) +
+  stat_pointinterval(
+    .width = 0.8, color = lighten("#333333", 0.2), size = 2.5
+  ) +
+  stat_pointinterval(
+    .width = 0.5, color = "#333333", interval_size = 5
+  ) +
+  scale_x_continuous(breaks = seq(-0.25, 1.25, 0.25)) +
+  scale_y_discrete(labels = c(
+    "Risk preference (\u03c1)",
+    "Competence (\u03b3)",
+    "Confidence (c)"
+  )) +
+  labs(
+    x = "Effects on choosing the opt-out",
+    y = "Predictors",
+    tag = "b"
+  ) +
+  theme(
+    axis.title.x = element_text(hjust = 0.5),
+    plot.tag.position = c(0.01, 0.99)
+  )
+
+fig_2b
+```
+
+## Figure 2c
+
+```{r}
+df_forced <- readRDS("../output/data/group/sim_forced_voting.rds") %>%
+  group_by(ori_var) %>%
+  summarise(mean_group = mean(result_group == "correct")) %>%
+  expand_grid(payoff_solo = c(500, 550, 590, 640, 700, 770, 850, 940, 1040, 1150, 1270, 1400)) %>%
+  mutate(
+    ori_var = case_when(
+      ori_var == 8 ~ "Level 1",
+      ori_var == 16 ~ "Level 2",
+      ori_var == 32 ~ "Level 3",
+      ori_var == 64 ~ "Level 4"
+    ),
+    group = "forced"
+  )
+```
+
+```{r}
+fig_2c <- readRDS("../output/data/group/sim_actual_voting.rds") %>%
+  filter(result_group != "abort") %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(
+    mean_group = mean(result_group == "correct"),
+    mean_solo = mean(accuracy_solo, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = c("mean_group", "mean_solo"),
+    names_to = c(NA, "choice"),
+    names_sep = "_",
+    values_to = "mean"
+  ) %>%
+  mutate(
+    choice = if_else(choice == "group", "Majority", "Loners"),
+    choice = fct_rev(factor(choice)),
+    ori_var = case_when(
+      ori_var == 8 ~ "Level 1",
+      ori_var == 16 ~ "Level 2",
+      ori_var == 32 ~ "Level 3",
+      ori_var == 64 ~ "Level 4"
+    )
+  ) %>%
+  ggplot(
+    aes(payoff_solo, mean, color = choice, linetype = choice, shape = choice)
+  ) +
+  geom_hline(yintercept = 0.5, color = "gray", linetype = "dashed") +
+  geom_point(size = 1) +
+  geom_line() +
+  scale_x_continuous(
+    breaks = c(500, 550, 590, 640, 700, 770, 850, 940, 1040, 1150, 1270, 1400),
+    labels = c("500","","","","700","","","940","","","1,270","")
+  ) +
+  scale_y_continuous(breaks = seq(0.3, 1, 0.1), limits = c(0.3, 1)) +
+  scale_color_manual(values = c("#009e73", "gray70")) +
+  # scale_linetype_manual(values = c("solid", "dashed")) +
+  facet_wrap(vars(ori_var)) +
+  labs(
+    x = "12 levels of the reward of the opt-out (JPY)",
+    y = "Accuracy",
+    tag = "c"
+  ) +
+  guides(color = "none", shape = "none", linetype = "none") +
+  theme_facet() +
+  theme(plot.tag.position = c(0.01, 0.99))
+```
+
+## Figure 2d
+
+```{r}
+df_group %>%
+  filter(order == "post" & choice == "solo") %>%
+  group_by(id, ori_var) %>%
+  summarise(accuracy = mean(result == "correct")) %>%
+  group_by(ori_var) %>%
+  summarise(mean = mean(accuracy))
+```
+
+```{r}
+df_biased <- readRDS("../output/data/group/sim_actual_voting.rds") %>%
+  filter(result_group != "abort") %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(
+    mean_group = mean(result_group == "correct"),
+    mean_solo = mean(accuracy_solo, na.rm = TRUE)
+  ) %>%
+  mutate(group = "biased")
+```
+
+```{r}
+fig_2d <- readRDS("../output/data/group/sim_nobias_voting.rds") %>%
+  group_by(ori_var, payoff_solo) %>%
+  summarise(mean_group = mean(result_group == "correct")) %>%
+  mutate(group = "unbiased") %>%
+  bind_rows(df_biased) %>%
+  mutate(
+    ori_var = case_when(
+      ori_var == 8 ~ "Level 1",
+      ori_var == 16 ~ "Level 2",
+      ori_var == 32 ~ "Level 3",
+      ori_var == 64 ~ "Level 4"
+    )
+  ) %>%
+  ggplot(
+    aes(payoff_solo, mean_group, color = group, linetype = group, shape = group)
+  ) +
+  geom_hline(yintercept = 0.5, color = "gray", linetype = "dashed") +
+  geom_line(data = df_forced, aes(color = ""), linetype = "solid") +
+  geom_point(size = 1) +
+  geom_line() +
+  scale_x_continuous(
+    breaks = c(500, 550, 590, 640, 700, 770, 850, 940, 1040, 1150, 1270, 1400),
+    labels = c("500","","","","700","","","940","","","1,270","")
+  ) +
+  scale_y_continuous(breaks = seq(0.3, 1, 0.1), limits = c(0.3, 1)) +
+  scale_color_manual(values = c("black", "#009e72", "orange")) +
+  # scale_linetype_manual(values = c(1, 1, 1.5)) +
+  scale_shape_manual(values = c(16, 0, 17)) +
+  facet_wrap(vars(ori_var)) +
+  labs(
+    x = "12 levels of the reward of the opt-out (JPY)",
+    y = "Accuracy",
+    tag = "d"
+  ) +
+  guides(color = "none", shape = "none", linetype = "none") +
+  theme_facet() +
+  theme(plot.tag.position = c(0.01, 0.99))
+```
+
+## Figure 2a-d
+
+```{r}
+fig_2 <- (
+  ((fig_2a | fig_2b) + plot_layout(widths = c(0.55, 0.45))) /
+  (fig_2c | fig_2d)
+) + plot_layout(heights = c(0.35, 0.65)) +
+  plot_annotation(theme = theme(plot.margin = margin()))
+
+ggsave(
+  "../output/figure/figure_2abcd.pdf", fig_2,
+  units = "cm", width = 14, height = 10, device = cairo_pdf
+)
+```
+
+
+```{r}
+ggsave(
+  "../output/figure/figure_3a.pdf", fig_3a,
+  units = "cm", width = 7, height = 5
+)
+
+ggsave(
+  "../output/figure/figure_3b.pdf", fig_3b,
+  units = "cm", width = 7, height = 5, device = cairo_pdf
+)
+
+ggsave(
+  "../output/figure/figure_3c.pdf", fig_3c,
+  units = "cm", width = 7, height = 5
+)
+
+ggsave(
+  "../output/figure/figure_3d.pdf", fig_3d,
+  units = "cm", width = 7, height = 5
+)
+```
+
+
+```{r}
+df_group %>%
+  filter(order == "post") %>%
+  group_by(id, ori_var) %>%
+  summarise(mean = mean(choice == "group")) %>%
+  group_by(ori_var) %>%
+  summarise(mean = mean(mean))
+```
+
+
+# Figure S1
+
+## Figure S1b
+
+```{r}
+fig_s1b_left <- expand_grid(value = 10:100, rho = c(0.3, 0.5, 0.6)) %>%
+  mutate(utility = value ^ rho) %>%
+  ggplot(aes(value, utility, group = rho, color = rho)) +
+  geom_line(size = 1) +
+  scale_color_continuous_sequential("Blues 3", begin = 0.5) +
+  labs(x = "Reward", y = "Utility", tag = "b") +
+  guides(color = "none") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    plot.margin = margin(),
+    plot.tag.position = c(0.06, 0.99)
+  )
+
+fig_s1b_left
+```
+
+```{r}
+fig_s1b_right <- expand_grid(value = seq(-6, 6, length = 100), tau = c(1, 0.3, 0.1)) %>%
+  mutate(q = plogis(value * tau)) %>%
+  ggplot(aes(value, q, group = tau, color = factor(tau))) +
+  annotate(
+    "line", x = c(-6, 0), y = c(0.5, 0.5),
+    color = "gray", linetype = "dashed"
+  ) +
+  annotate(
+    "line", x = c(0, 0), y = c(0, 0.5),
+    color = "gray", linetype = "dashed"
+  ) +
+  geom_line(size = 1) +
+  scale_x_continuous(breaks = 0) +
+  scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+  scale_color_discrete_sequential("OrRd", nmax = 7, order = c(3, 5, 7)) +
+  labs(x = "u(risky) - u(sure)", y = "P(risky)") +
+  guides(color = "none") +
+  theme(plot.margin = margin())
+
+fig_s1b_right
+```
+
+## Figure S1c
+
+```{r}
+fig_s1c <- median_powutil %>%
+  mutate(risk = if_else(rho > 1.0, "risk-seeking", "risk-averse")) %>%
+  ggplot(aes(x = rho, y = "")) +
+  stat_halfeye(
+    point_color = NA, .width = 0, height = 0.6,
+    position = position_nudge(y = 0.3)
+  ) +
+  geom_boxplot(
+    position = position_nudge(y = 0.3),
+    width = 0.1, outlier.shape = NA
+  ) +
+  geom_point(
+    aes(color = risk),
+    position = position_jitter(width = 0, height = 0.1, seed = 1),
+    size = 0.3, show.legend = FALSE
+  ) +
+  geom_vline(xintercept = 1, color = "gray", linetype = "dashed") +
+  annotate(
+    "text", x = 0.62, y = 0.65, label = "Risk-averse",
+    color = "#0072b2", size = 2.2
+  ) +
+  annotate(
+    "text", x = 1.25, y = 0.65, label = "Risk-seeking",
+    color = "#e69f00", size = 2.2
+  ) +
+  scale_x_continuous(breaks = seq(0.2, 1.6, 0.2)) +
+  scale_color_manual(values = c("#0072b2", "#e69f00")) +
+  labs(x = "Risk preference (\u03c1)", y = NULL, tag = "c") +
+  theme(
+    axis.ticks.y = element_blank(),
+    plot.margin = margin(),
+    plot.tag.position = c(-0.01, 0.99)
+  )
+
+fig_s1c
+```
+
+## Figure S1bc
+
+```{r}
+fig_s1bc <- (fig_s1b_left | plot_spacer() | fig_s1b_right | plot_spacer() | fig_s1c) +
+  plot_layout(widths = c(0.5, 0.05, 0.8, 0.005, 1.4)) +
+  plot_annotation(theme = theme(plot.margin = margin()))
+
+fig_s1bc
+
+ggsave(
+  "../output/figure/figure_s1bc.pdf", fig_s1bc,
+  units = "cm", width = 9.8, height = 3.5, device = cairo_pdf
+)
+```
+
+# Figure S2
+
+```{r}
+fig_s2 <- df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id, ori_var) %>%
+  summarise(mean = mean(result == "correct")) %>%
+  ggplot(aes(mean, ori_var, fill = ori_var)) +
+  geom_vline(xintercept = 0.5, color = "gray", linetype = "dashed") +
+  stat_halfeye(
+    position = position_nudge(y = 0.3),
+    slab_color = "#333333", slab_size = 0.5,
+    adjust = 1, point_color = NA, .width = 0, height = 0.6,
+  ) +
+  geom_point(
+    aes(color = ori_var),
+    position = position_jitter(width = 0, height = 0.15, seed = 1),
+    size = 0.5
+  ) +
+  scale_x_continuous(breaks = seq(0.4, 1, 0.1)) +
+  scale_y_discrete(labels = as.character(1:4)) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_d() +
+  labs(x = "Accuracy", y = "Levels of task difficulty") +
+  guides(color = "none", fill = "none")
+
+fig_s2
+
+ggsave(
+  "../output/figure/figure_s2.pdf", fig_s2,
+  units = "cm", width = 10, height = 7
+)
+```
+
+
+# Figure S3
+
+## Figure S3a
+
+```{r}
+sim_data <- sim_updating_model(
+  n_theta = 30, min_theta = -13, max_theta = 19,
+  epsilon = 2, lambda = 0.95, n_sim = 20, seed = 1
+) %>%
+  group_by(sim_id) %>%
+  mutate(result = as.numeric(order == 30 & mu > 0)) %>%
+  mutate(result = if_else(sum(result) == 1, "positive", "negative"))
+
+fig_s3a_left <- sim_data %>%
+  ggplot(aes(order, mu, group = sim_id)) +
+  annotate("line", x = c(0, 30), y = c(0, 0), color = "gray") +
+  geom_line(color = "gray50", size = 0.5, alpha = 0.8) +
+  geom_point(
+    data = sim_data %>% filter(order == 30),
+    aes(color = mu > 0), size = 0.3, alpha = 1
+  ) +
+  scale_y_continuous(breaks = 0, limits = c(-150, 220)) +
+  scale_color_manual(values = c("#333333", "#009e73")) +
+  labs(tag = "a") +
+  guides(color = "none") +
+  theme(
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    plot.margin = margin()
+  )
+
+fig_s3a_left
+```
+
+```{r}
+# stat_updating_model(
+#   n_theta = 30, min_theta = -13, max_theta = 19,
+#   epsilon = 2, lambda = 0.95, seed = 1
+# )
+
+fig_s3a_middle <- tibble(x = -150:220) %>%
+  mutate(y = dnorm(x, mean = 42.24533, sd = 59.22513)) %>%
+  ggplot(aes(x, y)) +
+  geom_ribbon(aes(ymin = 0, ymax = y, fill = x > 0), color = NA) +
+  geom_line(size = 1) +
+  annotate(
+    "line", x = c(42.24533, 42.24533), y = c(0, 0.007),
+    color = "#333333", linetype = "dashed"
+  ) +
+  scale_x_continuous(limits = c(-150, 220)) +
+  scale_fill_manual(values = c("gray90", "#009e73")) +
+  coord_flip() +
+  guides(fill = "none") +
+  theme(
+    axis.line = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank()
+  )
+
+fig_s3a_middle
+```
+
+```{r}
+param_2 <- median_goldstein %>%
+  filter(id == 10)
+
+fig_s3a_right <- tibble(p = seq(0.5, 1, length = 100)) %>%
+  mutate(
+    q = goldstein_einhorn(p, param_2$alpha, param_2$beta),
+    ymin = if_else(p > q, q, p),
+    ymax = if_else(p > q, p, q),
+    fill = p > q
+  ) %>%
+  ggplot(aes(p, q)) +
+  geom_ribbon(aes(ymin = ymin, ymax = ymax, fill = fill)) +
+  geom_line(color = "#333333", size = 1) +
+  annotate(
+    "line", x = c(0.5, 1), y = c(0.5, 1),
+    color = "#333333", size = 0.5, linetype = "dashed"
+  ) +
+  scale_y_continuous(breaks = seq(0.25, 1, 0.25)) +
+  scale_fill_manual(values = c("orange", "#56b4e9")) +
+  labs(x = "Objective accuracy (p)", y = "Subjective accuracy (q)", tag = "") +
+  guides(fill = "none") +
+  theme(
+    axis.text = element_text(size = 6),
+    axis.title.y = element_text(size = 7)
+  )
+
+fig_s3a_right
+```
+
+## Figure S3b
+
+```{r}
+fig_s3b <- df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id, ori_var, block) %>%
+  summarise(accuracy = mean(result == "correct")) %>%
+  group_by(ori_var, block) %>%
+  summarise(mean = mean(accuracy), se = se(accuracy)) %>%
+  mutate(
+    block = if_else(block == "Solo", "Solo block", "Opt-in/out block"),
+    block = fct_rev(factor(block))
+  ) %>%
+  rename(Block = block) %>%
+  ggplot(aes(
+    ori_var, mean, group = Block,
+    color = Block, fill = Block, shape = Block
+  )) +
+  geom_point(position = position_dodge(width = 0.6), size = 1) +
+  geom_line(
+    aes(linetype = Block),
+    position = position_dodge(width = 0.6), show.legend = FALSE
+  ) +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se),
+    position = position_dodge(width = 0.6), width = 0.4,
+    show.legend = FALSE
+  ) +
+  scale_x_discrete(labels = c("8", "16", "32", "64")) +
+  scale_color_manual(values = c("#333333", "gray")) +
+  labs(x = "Variance of orientations (degrees)", y = "Accuracy", tag = "b") +
+  theme(
+    legend.text = element_text(size = 6),
+    legend.box.margin = margin(),
+    legend.position = c(0.7, 1.05),
+    legend.margin = margin(),
+    legend.title = element_blank(),
+    legend.key.size = unit(0.4, "cm"),
+    legend.box.spacing = unit(0, "cm"),
+    plot.margin = margin()
+  )
+
+fig_s3b
+```
+
+## Figure S3c
+
+```{r}
+fig_s3c <- df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id) %>%
+  summarise(mean = mean(result == "correct")) %>%
+  left_join(median_gabor, by = "id") %>%
+  ggplot(aes(gamma, mean)) +
+  geom_smooth(method = lm, se = FALSE, color = "#0072b2", size = 0.5) +
+  geom_point(size = 0.3, color = "#333333") +
+  annotate(
+    "text", x = -2.5, y = 0.8, label = "r = .89",
+    color = "#333333", size = 2.5
+  ) +
+  labs(x = "Competence (\u03b3)", y = "Accuracy", tag = "c")
+
+fig_s3c
+```
+
+```{r}
+df_solo_group %>%
+  remove_order_pre() %>%
+  group_by(id) %>%
+  summarise(mean = mean(result == "correct")) %>%
+  left_join(median_gabor, by = "id") %$%
+  cor.test(~ gamma + mean)
+```
+
+## Figure S3d
+
+```{r}
+fig_s3d <- expand_grid(p = seq(0.5, 1, length = 100), id = 1:63) %>%
+  left_join(median_goldstein, by = "id") %>%
+  mutate(
+    q = goldstein_einhorn(p, alpha, beta),
+    q_rank = factor(rank(q_area_under_p))
+  ) %>%
+  ggplot(aes(p, q, color = q_rank)) +
+  annotate("line", x = c(0.5, 1), y = c(0.5, 1), linetype = "dashed") +
+  geom_line(size = 0.3) +
+  scale_color_viridis_d() +
+  labs(x = "Objective accuracy (p)", y = "Subjective accuracy (q)", tag = "d") +
+  guides(color = "none") +
+  theme(
+    axis.text = element_text(size = 6),
+    axis.title.y = element_text(size = 7),
+    plot.tag.position = c(-0.05, 0.95)
+  )
+
+fig_s3d
+```
+
+## Figure S3a-d
+
+```{r}
+fig_s3 <- 
+  ((fig_s3a_left | plot_spacer() | fig_s3a_middle | plot_spacer() | fig_s3a_right) +
+     plot_layout(widths = c(1, 0.01, 0.5, 0.01, 0.688))) /
+  ((fig_s3b | plot_spacer() | fig_s3c | plot_spacer() | fig_s3d) + 
+     plot_layout(widths = c(0.9, 0.01, 0.6, 0.01, 0.8))) +
+  plot_layout(heights = c(1, 1)) +
+  plot_annotation(theme = theme(plot.margin = margin()))
+
+fig_s3
+
+ggsave(
+  "../output/figure/figure_s3abcd.pdf", fig_s3,
+  units = "cm", width = 14, height = 7, device = cairo_pdf
+)
+```
+
+# Figure S4
+
+```{r}
+fig_s4 <- median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %>%
+  rename(
+    "\u03c1" = rho,
+    "\u03bb" = lambda,
+    "\u03b3" = gamma,
+    "\u03b1" = alpha,
+    "\u03b2" = beta,
+    c = q_area_under_p
+  ) %>%
+  select(!c) %>%
+  ggpairs(upper = "blank") +
+  theme_facet()
+
+fig_s4
+
+# ggsave(
+#   "../output/figure/figure_s4_raw.pdf", fig_s4,
+#   units = "cm", width = 14, height = 10, device = cairo_pdf
+# )
+```
+
+```{r}
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ rho + lambda)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ rho + gamma)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ rho + alpha)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ rho + beta)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ lambda + gamma)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ lambda + alpha)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ lambda + beta)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ gamma + alpha)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ gamma + beta)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ alpha + beta)
+
+median_powutil %>%
+  select(!tau) %>%
+  left_join(median_gabor, by = "id") %>%
+  select(!epsilon) %>%
+  left_join(median_goldstein, by = "id") %>%
+  select(!id) %$%
+  cor.test(~ gamma + q_area_under_p)
+```
+
+```{r}
+round(p.adjust(c(0.07868, 0.1734, 0.02022, 0.1955, 0.005491, 0.1984, 0.3132, 0.3293, 0.8712, 0.05826), method = "holm"), digits = 3)
+```
+
+# Figure S5
+
+```{r}
+fit_voting %>%
+  spread_draws(coef_rho, coef_gamma, coef_confidence) %>%
+  median_qi(.width = 0.95)
+```
+
+```{r}
+median_intercept <- fit_voting %>%
+  spread_draws(intercept[id]) %>%
+  median_qi(.width = 0.95) %>%
+  mutate(variable = "Intercept") %>%
+  arrange(intercept) %>%
+  mutate(yaxis_num = row_number()) %>%
+  rename(median = intercept)
+
+median_reward <- fit_voting %>%
+  spread_draws(coef_reward[id]) %>%
+  median_qi(.width = 0.95) %>%
+  mutate(variable = "Reward of the opt-out") %>%
+  arrange(coef_reward) %>%
+  mutate(yaxis_num = row_number()) %>%
+  rename(median = coef_reward)
+
+median_var <- fit_voting %>%
+  spread_draws(coef_var[id]) %>%
+  median_qi(.width = 0.95) %>%
+  mutate(variable = "Variance of orientations") %>%
+  arrange(coef_var) %>%
+  mutate(yaxis_num = row_number()) %>%
+  rename(median = coef_var)
+
+fig_s5 <- bind_rows(median_intercept, median_reward, median_var) %>%
+  ggplot(aes(median, yaxis_num)) +
+  geom_vline(xintercept = 0, color = "gray", linetype = "dashed") +
+  geom_pointinterval(
+    aes(xmin = .lower, xmax = .upper), color = "#333333",
+    interval_size = 0.01, point_size = 0.1
+  ) +
+  scale_y_continuous(limits = c(1, 63), expand = c(0, 1)) +
+  facet_wrap(vars(variable), scale = "free_x") +
+  labs(x = "Coefficients", y = "Participants") +
+  theme_facet() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+fig_s5
+
+ggsave(
+  "../output/figure/figure_s5.pdf", fig_s5,
+  units = "cm", width = 14, height = 8
+)
+```
+
+# Figure S6
+
+```{r}
+fig_s6 <- fit_rating_q %>%
+  spread_draws(slope[id]) %>%
+  left_join(
+    mutate_yaxis_num(median_rating %>% filter(level == 1), slope),
+    by = "id"
+  ) %>%
+  ggplot(aes(slope, factor(yaxis_num))) +
+  geom_vline(xintercept = 0, color = "gray", linetype = "dashed") +
+  stat_halfeye(
+    show_slab = FALSE, .width = c(0.95),
+    color = "#333333", interval_size = 0.01, point_size = 0.1
+  ) +
+  scale_x_continuous(breaks = seq(0, 2.5, 0.5)) +
+  labs(x = "Coefficients for subjective accuracy (q)", y = "Participants") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+fig_s6
+
+ggsave(
+  "../output/figure/figure_s6.pdf", fig_s6,
+  units = "cm", width = 10, height = 7
+)
+```
+
+# Figure S7
+
+## Figure S7a
+
+```{r}
+fig_s7a <- fit_powutil %>%
+  spread_draws(y_pred[id]) %>%
+  sample_draws(ndraws = 20, seed = 1) %>%
+  mutate(n_risky = y_pred, draw = factor(.draw)) %>%
+  ggplot(aes(n_risky, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.25) +
+  geom_line(
+    data = count_n_risky(df_gamble),
+    stat = "density", color = "#009E73", size = 1
+  ) +
+  labs(x = "Frequency of risky choices", y = "Density", tag = "a") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    plot.tag.position = c(-0.01, 0.99)
+  )
+
+fig_s7a
+```
+
+## Figure S7b
+
+```{r}
+fig_s7b <- fit_gabor %>%
+  spread_draws(y_pred[id][ori_var]) %>%
+  sample_draws(ndraws = 20, seed = 3) %>%
+  ungroup() %>%
+  mutate(
+    n_correct = y_pred,
+    draw = factor(.draw),
+    ori_var = str_c("Level ", ori_var)
+  ) %>%
+  ggplot(aes(n_correct, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.25) +
+  geom_line(
+    data = df_solo_group %>%
+      filter(order == "post" | is.na(order)) %>%
+      mutate(
+        ori_var = case_when(
+          ori_var == 8 ~ "Level 1",
+          ori_var == 16 ~ "Level 2",
+          ori_var == 32 ~ "Level 3",
+          ori_var == 64 ~ "Level 4"
+        )
+      ) %>%
+      group_by(id, ori_var) %>%
+      summarise(n_correct = sum(result == "correct")),
+    stat = "density", color = "#0072b2", size = 1
+  ) +
+  facet_wrap(vars(ori_var)) +
+  labs(x = "Frequency of correct judgments", y = "Density", tag = "b") +
+  theme_facet() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    plot.tag.position = c(-0.01, 0.99)
+  )
+
+fig_s7b
+```
+
+## Figure S7c
+
+```{r}
+fig_s7c <- fit_goldstein %>%
+  spread_draws(y_pred[id][ori_var]) %>%
+  sample_draws(ndraws = 20, seed = 1) %>%
+  ungroup() %>%
+  mutate(
+    n_risky = y_pred,
+    draw = factor(.draw),
+    ori_var = str_c("Level ", ori_var)
+  ) %>%
+  ggplot(aes(n_risky, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.25) +
+  geom_line(
+    data = df_solo %>%
+      mutate(
+        ori_var = case_when(
+          ori_var == 8 ~ "Level 1",
+          ori_var == 16 ~ "Level 2",
+          ori_var == 32 ~ "Level 3",
+          ori_var == 64 ~ "Level 4"
+        )
+      ) %>%
+      group_by(id, ori_var) %>%
+      summarise(n_risky = sum(choice == "risky")),
+    stat = "density", color = "orange", size = 1
+  ) +
+  facet_wrap(vars(ori_var)) +
+  labs(x = "Frequency of risky choices", y = "Density", tag = "c") +
+  theme_facet() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    plot.tag.position = c(-0.01, 0.99)
+  )
+
+fig_s7c
+```
+
+## Figure S7d
+
+```{r}
+fig_s7d <- fit_voting %>%
+  spread_draws(y_pred[id][ori_var]) %>%
+  sample_draws(ndraws = 20, seed = 2) %>%
+  ungroup() %>%
+  mutate(
+    n_exit = y_pred,
+    draw = factor(.draw),
+    ori_var = str_c("Level ", ori_var)
+  ) %>%
+  ggplot(aes(n_exit, ..density..)) +
+  geom_line(aes(group = draw), stat = "density", color = "gray", size = 0.25) +
+  geom_line(
+    data = df_group %>%
+      filter(order == "post") %>%
+      mutate(
+        ori_var = case_when(
+          ori_var == 8 ~ "Level 1",
+          ori_var == 16 ~ "Level 2",
+          ori_var == 32 ~ "Level 3",
+          ori_var == 64 ~ "Level 4"
+        )
+      ) %>%
+      group_by(id, ori_var) %>%
+      summarise(n_exit = sum(choice == "solo")),
+    stat = "density", color = "#d55e00", size = 1
+  ) +
+  facet_wrap(vars(ori_var)) +
+  labs(x = "Frequency of choosing the opt-out", y = "Density", tag = "d") +
+  theme_facet() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    plot.tag.position = c(-0.01, 0.99)
+  )
+
+fig_s7d
+```
+
+```{r}
+fig_s7 <-
+  (fig_s7a | fig_s7b) /
+  (fig_s7c | fig_s7d) +
+  plot_annotation(theme = theme(plot.margin = margin()))
+
+fig_s7
+
+ggsave(
+  "../output/figure/figure_s7.pdf", fig_s7,
+  units = "cm", width = 14, height = 10
+)
+```
+
+# Figure S8
+
+```{r}
+fig_s8 <- fit_rating_q %>%
+  spread_draws(y_pred[id][rating]) %>%
+  median_qi(.width = 0.95) %>%
+  ungroup() %>%
+  rename(n = y_pred) %>%
+  ggplot(aes(rating, n)) +
+  geom_pointinterval(
+    aes(ymin = .lower, ymax = .upper),
+    color = "gray", size = 0.1
+  ) +
+  geom_point(
+    data = df_solo %>% count(id, rating),
+    color = "#cc79a7", shape = "triangle"
+  ) +
+  scale_x_continuous(breaks = 1:6) +
+  facet_wrap(vars(id), ncol = 7) +
+  labs(x = "Confidence ratings", y = "Frequency") +
+  theme_facet() +
+  theme(strip.text = element_text(size = 6, margin = margin(1, 1, 1, 1)))
+
+fig_s8
+
+ggsave(
+  "../output/figure/figure_s8.pdf", fig_s8,
+  units = "cm", width = 14, height = 16
+)
+```
+
+# Table S1
+
+```{r}
+read_csv("../material/param/gamble_main.csv") %>%
+  select(prob, payoff_risky) %>%
+  arrange(prob, payoff_risky) %>%
+  write.table("../output/figure/table_s1.txt", row.names = FALSE)
+```

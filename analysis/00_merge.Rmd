@@ -1,0 +1,150 @@
+---
+title: "Preprocessing"
+author: "Kiri Kuroda"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    includes:
+      in_header: ../html/header.html
+    css: ../css/style.css
+    md_extensions: -ascii_identifiers
+    df_print: paged
+    chunk_output_type: console
+    toc: yes
+    toc_float:
+      collapsed: false
+---
+
+<br>
+
+# Setup
+
+Load packages and functions.
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(qualtRics)
+
+# User-defined functions
+source("../function/r/my_functions.R")
+```
+
+<br>
+
+# Preprocessing
+
+Bind the individual files to one csv file, and save it in `../data/preprocessed`. `bind_rawdata()` is defined in `../function/r/my_functions.R`.
+
+```{r, message=FALSE, eval=FALSE}
+bind_rawdata(c("gamble", "solo", "solo_gabor", "group", "group_gabor"))
+```
+
+<br>
+
+Preprocess the raw questionnaire data, and make a new file (`../data/preprocessed/questionnaire.csv`). For details of social-value-orientation (SVO) scoring and the items, see Ryan O. Murphy's website (http://ryanomurphy.com).
+
+```{r, message=FALSE, eval=FALSE}
+svo_payoff <- read_csv("../data/questionnaire/svo_payoff.csv")
+
+read_survey("../data/questionnaire/raw_questionnaire.csv") %>%
+  # Cut unnecessary columns
+  select(difficulty:id) %>%
+  # SVO and other data is processed below
+  pivot_longer(cols = svo_1:svo_6, names_to = "item", values_to = "value") %>%
+  left_join(svo_payoff, by = c("item", "value")) %>%
+  mutate(self = self - 500, other = other - 500) %>%
+  group_by(id) %>%
+  mutate(mean_self = mean(self), mean_other = mean(other)) %>%
+  filter(item == "svo_1") %>%
+  mutate(
+    ratio = mean_other / mean_self,
+    angle = atan(ratio),
+    svo_score = angle * 180 / pi,
+    svo = case_when(
+      svo_score > 57.15 ~ "altruist",
+      svo_score > 22.45 & svo_score <= 57.15 ~ "prosocial",
+      svo_score > -12.04 & svo_score <= 22.45 ~ "individualist",
+      svo_score <= -12.04 ~ "competitor"
+    ),
+    gender = case_when(
+      gender == 1 ~ "man",
+      gender == 2 ~ "woman",
+      gender == 3 ~ "other",
+      gender == 4 ~ "noresponse"
+    ),
+    vision = case_when(
+      vision == 1 ~ "unaided",
+      vision == 2 ~ "glasses",
+      vision == 3 ~ "contact",
+      vision == 4 ~ "other"
+    ),
+    hand = if_else(hand == 1, "left", "right")
+  ) %>%
+  # Cut unnecessary columns and output the preprocessed data
+  select(id, difficulty:hand, svo_score, svo) %>%
+  arrange(id) %>%
+  write_csv("../data/preprocessed/questionnaire.csv")
+```
+
+<br>
+
+# Participants
+
+Sixty-three students at the University of Tokyo participated in the experiment. We first checked participants' basic data.
+
+```{r, message=FALSE}
+df_questionnaire <- read_csv("../data/preprocessed/questionnaire.csv")
+```
+
+<br>
+
+## Gender
+
+```{r}
+df_questionnaire %>%
+  count(gender)
+```
+
+<br>
+
+## Age
+
+```{r}
+df_questionnaire %>%
+  summarise(
+    mean_age = round(mean(age), 1),
+    sd_age = round(sd(age), 1),
+    min_age = min(age),
+    max_age = max(age)
+  )
+```
+
+<br>
+
+## Dominant hand
+
+```{r}
+df_questionnaire %>%
+  count(hand)
+```
+
+<br>
+
+# Post-session questionnaire
+
+Participants answered the seven items on a 7-point scale, but we do not report the results in this paper.
+
+- `difficulty`: Rating of the task difficulty (1: *Very easy*; 7: *Very difficult*).
+
+- `easy_other`: How much participants thought that previous 24 participants had answered correctly when the task was easy (1: *Not at all*; 7: *Very strongly*).
+
+- `hard_other`: How much participants thought that previous 24 participants had answered correctly when the task was difficult (1: *Not at all*; 7: *Very strongly*).
+
+- `influence`: How much participants thought that their own vote affected the majority's accuracy (1: *Not at all*; 7: *Very strongly*).
+
+- `variety`: How much participants thought that the majority's accuracy depended on who voters were (1: *Not at all*; 7: *Very strongly*).
+
+- `worsen`: How much participants thought that their own vote worsened the majority's accuracy (1: *Not at all*; 7: *Very strongly*).
+
+- `improve`: How much participants thought that their own vote improved the majority's accuracy (1: *Not at all*; 7: *Very strongly*).
