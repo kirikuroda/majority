@@ -10,8 +10,6 @@
   - `/analysis/00_merge.Rmd` generated the preprocessed data files in `/data/preprocessed`, so you don't have to touch the raw data.
 - `/function`
   - Functions in each language are saved here.
-- `/output`
-  - We saved the output here, which was generated in the analysis.
   - Figures in the manuscript are also saved here.
 - `/css` and `/html`
   - You don't have to touch these folders.
