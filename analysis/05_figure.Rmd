@@ -28,6 +28,8 @@ library(tidybayes)
 library(GGally)
 library(furrr)
 library(magrittr)
+library(signs)
+library(cmdstanr)
 
 # User-defined functions
 source("../function/r/my_functions.R")
@@ -60,8 +62,6 @@ fit_gabor <- readRDS("../output/data/gabor/fit_gabor.rds")
 fit_goldstein <- readRDS("../output/data/confidence/subjective_accuracy/fit_goldstein.rds")
 fit_rating_q <- readRDS("../output/data/confidence/rating/fit_rating_q.rds")
 fit_voting <- readRDS("../output/data/group/fit_voting.rds")
-# sim_actual_voting <- readRDS("../output/data/group/sim_actual_voting.rds")
-# sim_groupsize_voting <- readRDS("../output/data/group/sim_groupsize_voting.rds")
 ```
 
 <br>
@@ -383,6 +383,9 @@ fig_s1b_left
 ```
 
 ```{r}
+label_x <- expression(paste(italic("u"), "(risky) - ", italic("u"), "(sure)"))
+label_y <- expression(paste(italic("P"), "(risky)"))
+
 fig_s1b_right <- expand_grid(value = seq(-6, 6, length = 100), tau = c(1, 0.3, 0.1)) %>%
   mutate(q = plogis(value * tau)) %>%
   ggplot(aes(value, q, group = tau, color = factor(tau))) +
@@ -398,7 +401,10 @@ fig_s1b_right <- expand_grid(value = seq(-6, 6, length = 100), tau = c(1, 0.3, 0
   scale_x_continuous(breaks = 0) +
   scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
   scale_color_discrete_sequential("OrRd", nmax = 7, order = c(3, 5, 7)) +
-  labs(x = "u(risky) - u(sure)", y = "P(risky)") +
+  labs(
+    x = label_x,
+    y = label_y
+  ) +
   guides(color = "none") +
   theme(plot.margin = margin())
 
@@ -426,11 +432,11 @@ fig_s1c <- median_powutil %>%
   ) +
   geom_vline(xintercept = 1, color = "gray", linetype = "dashed") +
   annotate(
-    "text", x = 0.62, y = 0.65, label = "Risk-averse",
+    "text", x = 0.62, y = 0.65, label = "Risk averse",
     color = "#0072b2", size = 2.2
   ) +
   annotate(
-    "text", x = 1.25, y = 0.65, label = "Risk-seeking",
+    "text", x = 1.25, y = 0.65, label = "Risk seeking",
     color = "#e69f00", size = 2.2
   ) +
   scale_x_continuous(breaks = seq(0.2, 1.6, 0.2)) +
@@ -483,7 +489,7 @@ fig_s2 <- df_solo_group %>%
   scale_y_discrete(labels = as.character(1:4)) +
   scale_color_viridis_d() +
   scale_fill_viridis_d() +
-  labs(x = "Accuracy", y = "Levels of task difficulty") +
+  labs(x = "Accuracy", y = "Level of task difficulty") +
   guides(color = "none", fill = "none")
 
 fig_s2
@@ -580,7 +586,11 @@ fig_s3a_right <- tibble(p = seq(0.5, 1, length = 100)) %>%
   ) +
   scale_y_continuous(breaks = seq(0.25, 1, 0.25)) +
   scale_fill_manual(values = c("orange", "#56b4e9")) +
-  labs(x = "Objective accuracy (p)", y = "Subjective accuracy (q)", tag = "") +
+  labs(
+    x = expression(paste("Objective accuracy (", italic(p), ")")),
+    y = expression(paste("Subjective accuracy (", italic(q), ")")),
+    tag = ""
+  ) +
   guides(fill = "none") +
   theme(
     axis.text = element_text(size = 6),
@@ -620,7 +630,7 @@ fig_s3b <- df_solo_group %>%
   ) +
   scale_x_discrete(labels = c("8", "16", "32", "64")) +
   scale_color_manual(values = c("#333333", "gray")) +
-  labs(x = "Variance of orientations (degrees)", y = "Accuracy", tag = "b") +
+  labs(x = "Variance of orientation (degrees)", y = "Accuracy", tag = "b") +
   theme(
     legend.text = element_text(size = 6),
     legend.box.margin = margin(),
@@ -647,7 +657,7 @@ fig_s3c <- df_solo_group %>%
   geom_smooth(method = lm, se = FALSE, color = "#0072b2", size = 0.5) +
   geom_point(size = 0.3, color = "#333333") +
   annotate(
-    "text", x = -2.5, y = 0.8, label = "r = .89",
+    "text", x = -2.5, y = 0.8, label = expression(paste(italic("r"), " = .89")),
     color = "#333333", size = 2.5
   ) +
   labs(x = "Competence (\u03b3)", y = "Accuracy", tag = "c")
@@ -677,7 +687,11 @@ fig_s3d <- expand_grid(p = seq(0.5, 1, length = 100), id = 1:63) %>%
   annotate("line", x = c(0.5, 1), y = c(0.5, 1), linetype = "dashed") +
   geom_line(size = 0.3) +
   scale_color_viridis_d() +
-  labs(x = "Objective accuracy (p)", y = "Subjective accuracy (q)", tag = "d") +
+  labs(
+    x = expression(paste("Objective accuracy (", italic(p), ")")),
+    y = expression(paste("Subjective accuracy (", italic(q), ")")),
+    tag = "d"
+  ) +
   guides(color = "none") +
   theme(
     axis.text = element_text(size = 6),
@@ -850,7 +864,7 @@ median_intercept <- fit_voting %>%
 median_reward <- fit_voting %>%
   spread_draws(coef_reward[id]) %>%
   median_qi(.width = 0.95) %>%
-  mutate(variable = "Reward of the opt-out") %>%
+  mutate(variable = "Reward for the opt\u002Dout choice") %>%
   arrange(coef_reward) %>%
   mutate(yaxis_num = row_number()) %>%
   rename(median = coef_reward)
@@ -858,7 +872,7 @@ median_reward <- fit_voting %>%
 median_var <- fit_voting %>%
   spread_draws(coef_var[id]) %>%
   median_qi(.width = 0.95) %>%
-  mutate(variable = "Variance of orientations") %>%
+  mutate(variable = "Variance of orientation") %>%
   arrange(coef_var) %>%
   mutate(yaxis_num = row_number()) %>%
   rename(median = coef_var)
@@ -872,7 +886,7 @@ fig_s5 <- bind_rows(median_intercept, median_reward, median_var) %>%
   ) +
   scale_y_continuous(limits = c(1, 63), expand = c(0, 1)) +
   facet_wrap(vars(variable), scale = "free_x") +
-  labs(x = "Coefficients", y = "Participants") +
+  labs(x = "Coefficient", y = "Participant") +
   theme_facet() +
   theme(
     axis.text.y = element_blank(),
@@ -883,7 +897,7 @@ fig_s5
 
 ggsave(
   "../output/figure/figure_s5.pdf", fig_s5,
-  units = "cm", width = 14, height = 8
+  units = "cm", width = 14, height = 8, device = cairo_pdf()
 )
 ```
 
@@ -903,7 +917,10 @@ fig_s6 <- fit_rating_q %>%
     color = "#333333", interval_size = 0.01, point_size = 0.1
   ) +
   scale_x_continuous(breaks = seq(0, 2.5, 0.5)) +
-  labs(x = "Coefficients for subjective accuracy (q)", y = "Participants") +
+  labs(
+    x = expression(paste("Coefficient for subjective accuracy (", italic("q"), ")")),
+    y = "Participant"
+  ) +
   theme(
     axis.text.y = element_blank(),
     axis.ticks.y = element_blank()
@@ -1101,7 +1118,7 @@ fig_s8 <- fit_rating_q %>%
   ) +
   scale_x_continuous(breaks = 1:6) +
   facet_wrap(vars(id), ncol = 7) +
-  labs(x = "Confidence ratings", y = "Frequency") +
+  labs(x = "Confidence rating", y = "Frequency") +
   theme_facet() +
   theme(strip.text = element_text(size = 6, margin = margin(1, 1, 1, 1)))
 
