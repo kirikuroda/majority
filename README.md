@@ -1,4 +1,4 @@
-# Data and analysis codes for "..." (Kuroda, Takahashi, Kameda)
+# Data and analysis codes for "Majority rule can help groups solve difficult tasks even when confident members opt out to serve individual interests" (Kuroda, Takahashi, Kameda)
 
 ## Directories
 
