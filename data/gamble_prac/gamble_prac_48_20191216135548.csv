@@ -1,0 +1,5 @@
+task,id,trial,payoff_sure,payoff_risky,prob,choice,rt,pos
+gamble_prac,48,1,500,2000,0.3,sure,3.495233622001251,rs
+gamble_prac,48,2,500,1250,0.4,sure,5.229998533999606,sr
+gamble_prac,48,3,500,1400,0.5,risky,2.7830091929990886,sr
+gamble_prac,48,4,500,800,1.0,risky,3.569840338999711,rs

@@ -1,0 +1,10 @@
+---
+title: "Session info"
+author: "Kiri Kuroda"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+sessionInfo()
+```

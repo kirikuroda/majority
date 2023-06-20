@@ -1,0 +1,2 @@
+task,id,accuracy_mean,accuracy_sd,accuracy_self
+dist,20,73.84696016771488,7.754716981132076,61.13731656184487

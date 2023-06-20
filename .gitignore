@@ -5,3 +5,7 @@
 .Ruserdata
 *.DS_Store
 /output
+/report
+/image
+/function/old
+/conference

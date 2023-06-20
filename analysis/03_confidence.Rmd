@@ -731,6 +731,40 @@ median_goldstein <- fit_goldstein %>%
   ungroup()
 ```
 
+```{r}
+fit_goldstein %>%
+  spread_draws(alpha[id], beta[id]) %>%
+  median_qi() %>%
+  select(id, alpha, beta) %>%
+  group_by(id) %>%
+  nest() %>%
+  mutate(
+    q_area_under_p = map(data, ~integrate(
+      q_integrand, lower = 0.5, upper = 1,
+      alpha = .x$alpha, beta = .x$beta
+    )),
+    q_area_under_p = pluck(q_area_under_p, 1, "value")
+  ) %>%
+  unnest(data) %>%
+  ungroup()
+```
+
+```{r}
+# median_goldstein %>%
+#   group_by(id) %>%
+#   nest() %>%
+#   mutate(
+#     q_0 = map(data, ~integrate(
+#       q_integrand_zero, lower = 0.5, upper = 1,
+#       alpha = .x$alpha, beta = .x$beta
+#     )),
+#     q_0 = pluck(q_0, 1, "value")
+#   ) %>%
+#   unnest(cols = c(data)) %>%
+#   ggplot(aes(q_0, q_area_under_p)) +
+#   geom_point()
+```
+
 ```{r, include=FALSE, eval=FALSE}
 # saveRDS(median_goldstein, "../output/data/confidence/subjective_accuracy/median_goldstein.rds")
 ```

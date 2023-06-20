@@ -246,6 +246,10 @@ q_integrand <- function(p, alpha, beta) {
   goldstein_einhorn(p, alpha, beta) - p
 }
 
+q_integrand_zero <- function(p, alpha, beta) {
+  goldstein_einhorn(p, alpha, beta)
+}
+
 # 04_group.Rmd ----------
 
 # Calculate the ideal accuracy of majority
